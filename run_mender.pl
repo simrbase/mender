@@ -110,6 +110,7 @@ my $min_tiling         = cfg("merge_filters", "min_tiling",         "1");
 my $min_cov            = cfg("merge_filters", "min_cov",            "0");
 my $require_isoseq     = cfg("merge_filters", "require_isoseq",     "");
 my $isoseq_min_span    = cfg("merge_filters", "isoseq_min_spanning","0");
+my $asym_trim          = cfg("merge_filters", "asym_trim",          "yes");
 
 # validation
 my $run_gt    = cfg("validation", "run_gt",   "yes");
@@ -303,6 +304,7 @@ if ($run_steps{4}) {
 
     run_cmd(
         "$perl_bin $find_script " .
+        ($asym_trim =~ /^no$/i ? "--no_asym_trim " : "") .
         "$diamond_out " .
         "$gff " .
         "$subject_fa " .

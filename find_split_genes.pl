@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
+use Getopt::Long qw(GetOptions);
 
 ## find_split_genes.pl
 ##
@@ -303,6 +304,17 @@ use warnings;
 ##   Note: trimming and splitting only apply to chains with 3+ genes (2+ pairs).
 ##         2-gene pairs are never trimmed or split.
 ##
+##   --no_asym_trim flag:
+##     Disables all trimming and splitting. Chains are returned whole.
+##     Weak terminal junctions are still flagged as WEAK_END. Use this when:
+##       - Your reference proteome is distant (fewer tiling hits overall) and
+##         the asym_threshold of 6 is rarely reached, making trimming too
+##         aggressive.
+##       - You want to inspect which genes would be trimmed before deciding
+##         whether to discard them.
+##     Compare flag distributions (WEAK_END count, chain lengths) between
+##     runs with and without this flag to gauge its impact on your dataset.
+##
 ## -----------------------------------------------------------------------------
 ##
 ## FLAG DEFINITIONS
@@ -338,10 +350,14 @@ use warnings;
 ##
 ## =============================================================================
 
-my $blast      = shift or die "usage: $0 blast gff subject_fa query_fa\n";
-my $gff        = shift or die "usage: $0 blast gff subject_fa query_fa\n";
-my $subject_fa = shift or die "usage: $0 blast gff subject_fa query_fa\n";
-my $query_fa   = shift or die "usage: $0 blast gff subject_fa query_fa\n";
+my $no_asym_trim = 0;
+GetOptions("no_asym_trim" => \$no_asym_trim)
+    or die "usage: $0 [--no_asym_trim] blast gff subject_fa query_fa\n";
+
+my $blast      = shift or die "usage: $0 [--no_asym_trim] blast gff subject_fa query_fa\n";
+my $gff        = shift or die "usage: $0 [--no_asym_trim] blast gff subject_fa query_fa\n";
+my $subject_fa = shift or die "usage: $0 [--no_asym_trim] blast gff subject_fa query_fa\n";
+my $query_fa   = shift or die "usage: $0 [--no_asym_trim] blast gff subject_fa query_fa\n";
 
 my $wiggle         = 15;  # aa wiggle room for tiling junction
 my $max_dist       =  4;  # max genomic rank distance between gene pair
@@ -779,6 +795,10 @@ sub refine_chain {
 
     # 2-gene pairs are never trimmed or split
     return ([@genes]) if @genes <= 2;
+
+    # When --no_asym_trim is active, skip all trimming and splitting.
+    # Chains are returned whole; WEAK_END junctions will be flagged but not removed.
+    return ([@genes]) if $no_asym_trim;
 
     # --- TRIMMING PASS (iterative) ---
     my $trimmed = 1;

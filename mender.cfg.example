@@ -161,6 +161,21 @@ require_isoseq =
 ## Example: isoseq_min_spanning = 3  — require at least 3 spanning reads
 isoseq_min_spanning = 0
 
+## asym_trim: yes/no (default yes)
+## Controls whether find_split_genes.pl trims or splits multi-gene chains
+## at weak asymmetric junctions (1 tiling hit where the strong side has
+## >= 6 hits). When yes, weak terminal genes are dropped and weak internal
+## junctions cause splits; the dropped genes are silently excluded from the
+## merge table. When no, chains are kept whole and the weak-end genes appear
+## in the output with a WEAK_END flag so you can review them manually.
+##
+## Consider setting to 'no' when:
+##   - Your reference proteome is phylogenetically distant (fewer tiling hits
+##     overall, so the asymmetry threshold of 6 is rarely reached).
+##   - You want to see what would be trimmed before deciding to discard it.
+##   - You are comparing two runs to evaluate the effect of trimming.
+asym_trim = yes
+
 ## ============================================================
 [validation]
 ##
