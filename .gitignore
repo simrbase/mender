@@ -1,0 +1,20 @@
+# Perl backup files
+*.pl~
+
+# Pipeline working directories and outputs
+mender_workdir/
+*_workdir/
+*.dmnd
+*.log
+new_merges.gff
+removed_genes.gff
+
+# Sequence and annotation data files
+*.gff
+*.gff3
+*.fa
+*.fasta
+
+# Project-specific configs (copy from mender.cfg.example)
+*.cfg
+!mender.cfg.example

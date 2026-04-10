@@ -1,0 +1,196 @@
+## ============================================================
+## mender.cfg.example — Mender pipeline configuration file
+## Split gene detection and merging for genome annotations
+## ============================================================
+##
+## Usage:
+##   perl run_mender.pl --config myproject.cfg
+##   perl run_mender.pl --config myproject.cfg --steps 1,2,3   # run specific steps
+##   perl run_mender.pl --config myproject.cfg --steps 5       # run only merge
+##   perl run_mender.pl --config myproject.cfg --dry_run       # preview merges only
+##
+## Steps:
+##   1  prepare    clean protein fasta, extract GFF subsets
+##   2  diamond    run diamond blastp
+##   3  bedtools   run bedtools intersect for IsoSeq overlaps
+##   4  find       run find_split_genes.pl
+##   5  validate   run validate_merge_with_isoseq.pl (requires isoseq_gff)
+##   6  merge      run merge_split_genes.pl
+##   7  check      run gt gff3validator and agat validation
+##
+## Lines beginning with # are comments and are ignored.
+## Leave optional values blank to skip that feature.
+## ============================================================
+
+[input]
+
+## Full path to your genome annotation GFF3 file.
+## Must be sorted parent-before-child.
+## If not sorted: gt gff3 -sort -tidy -retainids your.gff > sorted.gff
+gff = genomic.gff
+
+## Protein FASTA for the genome being annotated (the query).
+## Internal stop codons will be removed automatically in step 1.
+proteome_fa = protein.aa.fa
+
+## Reference proteome FASTA for diamond blastp (the subject/database).
+## Should be a well-annotated proteome from a closely related species.
+## For vertebrates, Anolis carolinensis works well.
+subject_fa = anolis_proteome.fa
+
+## IsoSeq GFF file (mRNA features from long-read transcriptome).
+## Used in step 3 (bedtools) and step 5 (IsoSeq validation).
+## Leave blank to skip IsoSeq steps — pipeline will use protein evidence only.
+isoseq_gff =
+
+## Transcript->gene mapping is derived automatically from the input GFF.
+
+## ============================================================
+[output]
+
+## Name for the merged output GFF3 file.
+output_gff = new_merges.gff
+
+## Name for the removed source genes GFF3 file (audit trail).
+removed_gff = removed_genes.gff
+
+## Working directory for intermediate files.
+## Will be created if it does not exist.
+workdir = mender_workdir
+
+## ============================================================
+[diamond]
+
+## Number of threads for diamond blastp.
+threads = 4
+
+## E-value cutoff for diamond blastp.
+## Only hits with evalue <= this value are kept.
+evalue = 1e-20
+
+## ============================================================
+[ids]
+##
+## New gene and transcript ID templates using bracket notation.
+## [GCOUNT:N]  gene counter, zero-padded to N digits
+## [TCOUNT:N]  transcript counter, zero-padded to N digits
+## [DATE]      today's date in YYYYMMDD format (substituted at runtime)
+## All other text is literal.
+##
+## Leave as default for a date-stamped safe ID that works for any organism.
+## For organism-specific IDs that match your annotation convention,
+## supply templates that match your existing ID format.
+##
+## Examples:
+##   CCA3 chameleon style:
+##     gene_template  = CCA3g1[GCOUNT:6]000
+##     trans_template = CCA3t1[GCOUNT:6][TCOUNT:3]
+##
+##   Generic Helixer bat genome (e.g. ACI1_HiC_scaffold_1_000001):
+##     gene_template  = ACI1_HiC_scaffold_1_[GCOUNT:6]
+##     trans_template = ACI1_HiC_scaffold_1_[GCOUNT:6].[TCOUNT]
+##
+##   Medicago style (MS.gene00001 / MS.gene00001.t1):
+##     gene_template  = MS.gene[GCOUNT:5]
+##     trans_template = MS.gene[GCOUNT:5].t[TCOUNT]
+##
+##   Trinity style:
+##     gene_template  = TRINITY_DN1000_c115_g[GCOUNT]
+##     trans_template = TRINITY_DN1000_c115_g[GCOUNT]_i[TCOUNT]
+##
+## Note: version suffix (e.g. .1) is intentionally excluded.
+## New genes are always version 1. Versions increment only when
+## manually editing exon boundaries after the initial merge.
+
+gene_template  = MERGE[DATE]g[GCOUNT:6]000
+trans_template = MERGE[DATE]t[GCOUNT:6][TCOUNT:3]
+
+## ============================================================
+[merge_filters]
+##
+## Filters applied when deciding which merge candidates to act on.
+## These correspond to --flags, --skip_flags etc in merge_split_genes.pl.
+
+## fix_partial: yes/no
+## When yes, PARTIAL_SPAN merges have their unsupported terminal gene(s)
+## trimmed before merging. A PARTIAL_SPAN merge has IsoSeq reads that
+## span some but not all genes in the merge group, indicating a terminal
+## gene may not belong. The supported subset is merged; the unsupported
+## terminal is left as-is.
+fix_partial = yes
+
+## skip_flags: comma-separated list of flags to exclude from merging.
+## Rows whose flag column contains any of these terms are skipped.
+##
+## Available flags:
+##   SKIPPED_GENE  a non-adjacent gene sits inside the merge locus
+##                 — review manually before merging (recommended to skip)
+##   LOW_COV       combined coverage < 60% — may be domain sharing not split gene
+##                 — generally safe to skip
+##   SINGLE_HIT    all junctions have exactly 1 tiling hit — thin protein evidence
+##                 — keep if you have good IsoSeq support, skip if protein-only
+##   WEAK_END      terminal junction has 1-2 tiling hits but survived trimming
+##   WEAK_INTERNAL internal junction has 1-2 hits but survived splitting
+##   STRONG        all junctions >= 3 tiling hits — you would NOT skip this
+##   noflag        directly adjacent, 2+ hits, coverage >= 60% — solid candidate
+skip_flags = SKIPPED_GENE,LOW_COV
+
+## flags: include filter — only process rows whose flag matches one of these.
+## Use 'all' to process all rows (subject to skip_flags above).
+## Example: flags = STRONG  — only merge STRONG candidates
+flags = all
+
+## min_tiling: minimum max_tiling_hits value to process a merge candidate.
+## 1 = no minimum (process all). Higher values require stronger protein evidence.
+## Suggested: 1 (rely on IsoSeq and flags instead)
+min_tiling = 1
+
+## min_cov: minimum combined_cov_pct to process a merge candidate.
+## 0 = no minimum. 60 would exclude LOW_COV cases (redundant if LOW_COV is
+## already in skip_flags).
+min_cov = 0
+
+## require_isoseq: only process rows with this exact isoseq_flag value.
+## Leave blank to process all rows regardless of IsoSeq status.
+## Options: FULL_SPAN, PARTIAL_SPAN, none
+## Example: require_isoseq = FULL_SPAN  — only IsoSeq-confirmed merges
+require_isoseq =
+
+## isoseq_min_spanning: minimum number of spanning IsoSeq reads required.
+## 0 = no minimum. Only meaningful if isoseq_gff was provided.
+## Example: isoseq_min_spanning = 3  — require at least 3 spanning reads
+isoseq_min_spanning = 0
+
+## ============================================================
+[validation]
+##
+## Optional validation steps run after merging (step 7).
+## Requires gt (GenomeTools) and agat to be installed.
+## These are validation only — they do not modify the output GFF.
+
+## run_gt: yes/no — run gt gff3validator on the output GFF.
+## Checks strict GFF3 spec compliance.
+run_gt = yes
+
+## run_agat: yes/no — run agat_convert_sp_gxf2gxf.pl on the output GFF.
+## Checks biological consistency (CDS/exon structure, orphan features, etc).
+## Output is discarded (/dev/null) — only warnings and errors are reported.
+run_agat = yes
+
+## ============================================================
+[paths]
+##
+## Paths to scripts and tools. Leave blank to use whatever is in $PATH.
+## Useful if you have multiple versions installed or non-standard locations.
+
+## Path to Mender scripts directory.
+## Leave blank if running from the same directory as the scripts.
+scripts_dir =
+
+## Explicit paths to tools (leave blank to use $PATH).
+## Note about agat_bin: if updating path, include agat_convert_sp_gxf2gxf.pl
+diamond_bin    =
+bedtools_bin   =
+gt_bin         =
+agat_bin       =  
+perl_bin       =
