@@ -948,7 +948,12 @@ sub compute_flags {
 
             my $is_terminal = ($i == 0 || $i == $#hits);
             if ($is_terminal) {
-                $weak_end = 1 if $max_hits < $asym_threshold || $h > 1;
+                # Flag as WEAK_END when the chain survived with a weak terminal:
+                # - max_hits below threshold (trimming wouldn't fire anyway), OR
+                # - h == 2 (2-hit terminal, never trimmed), OR
+                # - no_asym_trim active (trimming disabled; flag all weak terminals
+                #   including those that would have been trimmed in default mode)
+                $weak_end = 1 if $max_hits < $asym_threshold || $h > 1 || $no_asym_trim;
             } else {
                 $weak_int = 1;
             }
