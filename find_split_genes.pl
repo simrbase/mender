@@ -172,26 +172,39 @@ use warnings;
 ##
 ## NUM_TILING_HITS
 ##   Brief: How many different reference proteins independently support this
-##          pair as tiling fragments.
+##          pair as tiling fragments. Higher = more confident.
 ##
-##   Detail: This is your confidence score. Each tiling hit is an independent
-##           line of evidence that gene1 and gene2 together look like one
-##           complete protein. A pair with num_tiling_hits=16 (like SLC5A1)
-##           is far more convincing than one with num_tiling_hits=1.
+##   Detail: For a reference protein to contribute a tiling hit, BOTH gene1
+##           AND gene2 must have a fragment-level blast hit against that same
+##           protein, AND those two hits must tile end-to-end on it. The set
+##           of candidate proteins is the intersection of each gene's hit list,
+##           so only proteins that both genes independently matched are tested.
 ##
-##           Why would multiple reference proteins support the same pair?
-##           Because well-conserved genes have many homologs in the reference
-##           proteome that all share similar domain structure. If gene1 always
-##           covers the N-terminal domain and gene2 always covers the C-terminal
-##           domain across 10 different homologs, the split is almost certainly
-##           real.
+##           High num_tiling_hits arises when the reference proteome contains
+##           multiple proteins (paralogs or multi-species orthologs) that are
+##           each similar enough to BOTH fragments simultaneously — meaning
+##           the split cuts at a structurally conserved boundary that is
+##           shared across all those proteins (e.g., between a ligand-binding
+##           and a signaling domain that is conserved across a whole family).
 ##
-##           Low hit counts (1-2) can reflect small gene families in the
-##           reference, not just false positives — always cross-check with
-##           IsoSeq for 1-hit cases.
-##           1 hit  = thin evidence, rely on IsoSeq for confidence
+##           Low num_tiling_hits does NOT mean false positive. It commonly
+##           occurs for single-copy genes that have few representatives in
+##           the reference proteome, or when the split site falls in a region
+##           that has diverged across paralogs so that different family members
+##           look more like one half than the other. Such cases are still real
+##           splits — they simply lack the breadth of reference coverage to
+##           drive counts higher.
+##
+##           An important blind spot: if the two halves have diverged enough
+##           to preferentially hit DIFFERENT reference proteins (no overlap in
+##           their hit lists), the pair will never appear in output at all —
+##           the blast intersection is empty. IsoSeq spanning reads are the
+##           primary way to catch these.
+##
+##           1 hit  = thin protein evidence; cross-check with IsoSeq
 ##           2-4    = moderate evidence
-##           5+     = strong, consistent pattern across multiple homologs
+##           5+     = strong; the split boundary is conserved across many
+##                    reference proteins
 ##           10+    = very strong
 ##
 ##   Diagram:
@@ -388,7 +401,7 @@ close FA;
 # ---------------------------------------------------------------------------
 # Load gene coordinates from GFF, gene features only
 # ---------------------------------------------------------------------------
-my %locs;  # gene_id -> {ref, start, end, coord}
+my %locs;  # gene_id -> {ref, start, end, strand, coord}
 open GFF, $gff or die "cant open gff: $gff $!\n";
 while (my $line = <GFF>){
     chomp $line;
@@ -397,10 +410,11 @@ while (my $line = <GFF>){
     my @f = split "\t", $line;
     my ($gene_id) = $f[8] =~ /ID=([^;]+)/;
     next unless defined $gene_id;
-    $locs{$gene_id}{ref}   = $f[0];
-    $locs{$gene_id}{start} = $f[3];
-    $locs{$gene_id}{end}   = $f[4];
-    $locs{$gene_id}{coord} = "$f[0].$f[3].$f[4]";
+    $locs{$gene_id}{ref}    = $f[0];
+    $locs{$gene_id}{start}  = $f[3];
+    $locs{$gene_id}{end}    = $f[4];
+    $locs{$gene_id}{strand} = $f[6];
+    $locs{$gene_id}{coord}  = "$f[0].$f[3].$f[4]";
 }
 close GFF;
 
@@ -537,6 +551,7 @@ for my $i (0 .. $#all_sorted - 1) {
     for my $j ($i+1 .. $limit) {
         my $g2 = $all_sorted[$j];
         next unless $locs{$g1}{ref} eq $locs{$g2}{ref};
+        next unless $locs{$g1}{strand} eq $locs{$g2}{strand};  # same-strand only
         next unless exists $gene_hits{$g2};
 
         # Find shared reference hits by intersecting inverted indexes.

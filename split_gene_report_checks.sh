@@ -52,16 +52,20 @@ wc -l split_genes_summary.txt
 
 echo ""
 echo "--- Distribution of num_tiling_hits (confidence score) ---"
-echo "How many different reference proteins independently support each pair as a split gene."
-echo "A pair where gene1 always covers the N-terminal half and gene2 always covers"
-echo "the C-terminal half across multiple homologs is much more convincing than one"
-echo "supported by a single protein hit."
-echo "  1 hit  = thin evidence, rely on IsoSeq for confidence"
-echo "  2-4    = moderate evidence"
-echo "  5+     = strong, consistent pattern across multiple homologs"
+echo "How many different reference proteins independently confirm the same tiling split."
+echo "Both genes must share a reference protein AND their alignments must tile end-to-end"
+echo "on that protein. A high count means many reference proteins all show the same"
+echo "split boundary — consistent with a domain boundary conserved across paralogs and"
+echo "orthologs. A low count means few references happen to span both halves."
+echo "  1 hit  = thin evidence — rely on IsoSeq for confidence"
+echo "  2-4    = moderate, consistent tiling across a small set of references"
+echo "  5+     = strong, conserved domain boundary confirmed across many proteins"
 echo "  10+    = very strong"
-echo "Note: low hit counts can reflect small gene families in the reference, not just"
-echo "false positives — always cross-check with IsoSeq for 1-hit cases."
+echo "Note: low hit counts can reflect phylogenetic distance to the reference or"
+echo "a small gene family — not necessarily a false positive. Always cross-check"
+echo "with IsoSeq for 1-hit cases. If two genes preferentially hit DIFFERENT"
+echo "reference proteins (paralogs with diverged domains), their pair is invisible"
+echo "to this method entirely — a known blind spot."
 awk -F'\t' 'NR>1 {print $18}' split_genes_summary.txt | sort -n | uniq -c
 
 echo ""
@@ -115,6 +119,13 @@ echo "WEAK_END      = low-evidence terminal junction survived trimming"
 echo "WEAK_INTERNAL = low-evidence internal junction survived splitting"
 echo "LOW_COV       = combined coverage < 60%"
 echo "SKIPPED_GENE  = a non-adjacent gene sits inside this merge locus"
+echo ""
+echo "Note: '?' in junction_tiling_hits means two consecutive genes in the chain"
+echo "have NO direct tiling pair — they joined transitively through a shared neighbor."
+echo "Possible causes (all same-strand since strand filter is applied at pair build time):"
+echo "  - the two genes hit different reference proteins (empty intersection)"
+echo "  - their alignments heavily overlap on the same reference (gap >> wiggle)"
+echo "Both indicate these two consecutive genes are not direct tiling fragments."
 awk -F'\t' 'NR>1 {print $17}' split_genes_merge.txt | sort | uniq -c | sort -rn
 
 echo ""
@@ -175,6 +186,28 @@ awk -F'\t' 'NR>1 && $12!="NA"' split_genes_merge.txt | \
             }
         }
     }'
+
+echo ""
+echo "--- Chains with ? junctions (transitive joins with no direct tiling evidence) ---"
+echo "Two consecutive genes joined by no direct tiling pair."
+echo "They connected via a shared neighbor gene, not a direct protein hit."
+echo "Causes: different reference proteins (empty hit intersection), or"
+echo "heavy alignment overlap on the same reference (gap >> wiggle)."
+echo "Format: merge_id | num_genes | hit_desc | junction_hits | max_tiling | flag"
+awk -F'\t' 'NR>1 && $12~/\?/' split_genes_merge.txt | \
+    cut -f1,2,8,12,15,17
+
+echo ""
+echo "--- Chains where a terminal gene has no hit to the chain's best reference ---"
+echo "? in the evalue column means that gene contributed NO direct tiling evidence"
+echo "to the chain's best reference protein. It joined via a different protein entirely."
+echo "This is the strongest indicator that a terminal gene may not belong in the merge."
+echo "Format: merge_id | num_genes | hit_desc | evalues | junction_hits | flag"
+awk -F'\t' 'NR>1' split_genes_merge.txt | awk -F'\t' '{
+    n=split($11,ev,",");
+    if (ev[1]=="?" || ev[n]=="?")
+        print $1"\t"$2"\t"$8"\t"$11"\t"$12"\t"$17
+}'
 
 echo ""
 echo "============================================================"
@@ -261,6 +294,17 @@ echo "Especially important when protein flag is also STRONG"
 echo "merge_id | num_genes | genes | hit_desc | max_tiling | flag | spanning_count | isoseq_flag"
 awk -F'\t' 'NR>1 && $20=="PARTIAL_SPAN"' validated_merge.txt | \
     cut -f1,2,3,8,15,17,18,20
+
+echo ""
+echo "--- WEAK_END chains where the terminal gene has no hit to chain's best ref ---"
+echo "These are the highest priority WEAK_END cases: protein evidence AND"
+echo "evalue both say the terminal gene does not belong. Manual review recommended."
+echo "Format: merge_id | num_genes | hit_desc | evalues | junction_hits | flag | isoseq_flag"
+awk -F'\t' 'NR>1 && $17~/WEAK_END/' validated_merge.txt | awk -F'\t' '{
+    n=split($11,ev,",");
+    if (ev[1]=="?" || ev[n]=="?")
+        print $1"\t"$2"\t"$8"\t"$11"\t"$12"\t"$17"\t"$20
+}'
 
 echo ""
 echo "--- STRONG protein but PARTIAL_SPAN IsoSeq ---"

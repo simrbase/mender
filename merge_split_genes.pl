@@ -769,6 +769,15 @@ for my $group (@merge_groups) {
         next;
     }
 
+    # verify all genes are on the same strand
+    my @strands = map { (split "\t", $gene_line{$_})[6] } @genes;
+    my %seen_strands = map { $_ => 1 } @strands;
+    if (keys %seen_strands > 1) {
+        print STDERR "WARNING: mixed-strand chain, skipping merge [$merge_id]: ",
+                     join(",", map { "$genes[$_]($strands[$_])" } 0..$#genes), "\n";
+        next;
+    }
+
     # get strand and chromosome from first gene
     my @gf    = split "\t", $gene_line{ $genes[0] };
     my $chr   = $gf[0];
