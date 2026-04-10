@@ -27,6 +27,15 @@ the output GFF so they are easy to identify downstream.
 All tools are expected to be in `$PATH` unless explicit paths are set in the
 config file.
 
+Install only what you need. For example, if you are not using IsoSeq you can
+skip `bedtools`; if you are skipping the validation step you can skip `gt` and
+`agat`.
+
+```bash
+# Install the tools you need via conda (customize this list for your run)
+conda install -c bioconda diamond bedtools genometools-genometools agat perl
+```
+
 ---
 
 ## Quick Start
