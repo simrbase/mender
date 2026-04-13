@@ -18,10 +18,18 @@ use Getopt::Long qw(GetOptions);
 ##
 ## diamond blastp --db $SUBJECT --query multi.fa \
 ##   --outfmt 6 qseqid sseqid pident length mismatch gapopen qstart qend \
-##             sstart send evalue bitscore scovhsp slen \
+##             sstart send evalue bitscore scovhsp slen qcovhsp qlen \
 ##   --threads 4 --evalue 1e-20 --out diamond.out
 ##
-## Usage: perl find_split_genes.pl diamond.out genes.gff subject.fa query.fa
+## qcovhsp (query coverage per HSP) and qlen (query sequence length) are
+## required as of this version. They extend the fragment filter to catch
+## split fragments of shorter proteins that would otherwise be excluded by
+## the scovhsp-only threshold. See FRAGMENT FILTER below.
+##
+## Usage: perl find_split_genes.pl [--no_asym_trim] \
+##                                  [--large_span_warn N] \
+##                                  [--large_span_extreme N] \
+##                                  diamond.out genes.gff subject.fa query.fa
 ##
 ## Output files:
 ##
@@ -319,51 +327,176 @@ use Getopt::Long qw(GetOptions);
 ##
 ## FLAG DEFINITIONS
 ##   One or more flags per merge row, comma-separated if multiple apply.
+##   Flags document properties of the merge candidate — they are not all
+##   equivalent in risk. Read interpretations below before deciding which
+##   to add to skip_flags in the merge step.
+##
+##   Flags that apply to all chain sizes (2-gene pairs and longer):
+##
+##     LOW_COV            : combined_cov_pct < 60%. The genes together cover
+##                          less than 60% of the reference protein, suggesting
+##                          domain sharing rather than a genuine split gene.
+##                          Recommended to skip_flags in production runs.
+##
+##     SKIPPED_GENE       : a non-adjacent gene sits inside the merge locus
+##                          (genomic_dist > 1 for at least one junction). The
+##                          skipped gene may be an additional split fragment that
+##                          failed filters, a different gene, or an artifact.
+##                          Check skipped_genes column and GFF before merging.
+##                          Recommended to skip_flags and review manually.
+##
+##     MULTI_ISOFORM_JOIN : at least one source gene has more than one annotated
+##                          transcript. The merged gene will be built by cross-
+##                          product (N*M transcript combinations). Not all
+##                          cross-product transcripts are necessarily real —
+##                          they require transcript-level evidence to validate.
+##                          Review isoform structure in a genome browser before
+##                          relying on isoform-level annotations from this merge.
+##
+##     LARGE_SPAN         : the total genomic footprint of the merged locus
+##                          exceeds large_span_warn (default 500 kb). Biologically
+##                          plausible for some large gene families (e.g., neurexins,
+##                          ROBO receptors, dystrophin) but cross-check with IsoSeq
+##                          spanning evidence before acting on weak-evidence merges.
+##
+##     LARGE_SPAN_EXTREME : the total genomic footprint exceeds large_span_extreme
+##                          (default 2 Mb). Only a handful of vertebrate genes span
+##                          this range. Strong FP risk unless FULL_SPAN IsoSeq
+##                          confirms. Recommended to add to skip_flags unless you
+##                          have independent evidence.
 ##
 ##   For 2-gene pairs (single junction, no trimming/splitting):
-##     SINGLE_HIT    : the one junction has exactly 1 tiling hit
-##     LOW_COV       : combined_cov_pct < 60%
-##     SKIPPED_GENE  : a non-adjacent gene sits between g1 and g2 —
-##                     check skipped_genes column and GFF
-##     (no flag)     : 2+ tiling hits and coverage >= 60% and directly adjacent
+##
+##     SINGLE_HIT         : the junction has exactly 1 tiling hit — only one
+##                          reference protein supports this merge.
+##
+##                          IMPORTANT — this is a REVIEW flag, not a default
+##                          skip flag. Interpretation depends on the reference
+##                          proteome and the gene family:
+##
+##                          When the reference proteome contains only one copy of
+##                          a gene (single-copy gene), that gene has at most one
+##                          protein to tile against. For such genes, 1 tiling hit
+##                          is the expected maximum — it reflects the proteome's
+##                          gene copy number, not evidence weakness. A SINGLE_HIT
+##                          merge of a clearly described single-copy gene with a
+##                          strong evalue and good combined coverage is often as
+##                          reliable as a multi-hit merge from a gene family.
+##
+##                          Genuine risk arises when the single hit is against a
+##                          protein from a large multi-domain family (EGF repeats,
+##                          Ig domains, WD40, kinase domains, etc.) where domain
+##                          sharing among unrelated proteins could produce a
+##                          coincidental tiling alignment. In these cases, check
+##                          pident: low identity (<30%) on a single hit is a red
+##                          flag for domain-sharing false positives.
+##
+##                          Recommended action: inspect hit_desc and pident. If
+##                          the hit is a well-described single-copy gene with
+##                          strong evalue, proceed. If the hit is a generic domain
+##                          protein with low pident, require IsoSeq confirmation.
+##
+##     (no flag)          : 2+ tiling hits, coverage >= 60%, directly adjacent —
+##                          solid candidate
 ##
 ##   For 3+ gene chains (after trimming and splitting):
-##     STRONG        : all junctions have >= 3 tiling hits — high confidence
-##     WEAK_END      : a terminal junction has 1-2 hits but asymmetry < 6
-##                     (survived trimming but still low evidence at the end)
-##     WEAK_INTERNAL : an internal junction has 1-2 hits but both neighbors
-##                     didn't both meet the >= 6 threshold for splitting
-##     SINGLE_HIT    : all junctions have exactly 1 tiling hit
-##     LOW_COV       : best_combined_cov_pct < 60%
-##     SKIPPED_GENE  : at least one junction spans across a non-adjacent gene —
-##                     check skipped_genes column and GFF. The skipped gene
-##                     may be an additional fragment that should be in the merge.
+##
+##     STRONG             : all junctions have >= 3 tiling hits — high confidence.
+##
+##     TRANSITIVE_JOIN    : one or more consecutive gene pairs in this chain have
+##                          NO direct pairwise tiling evidence between them. Their
+##                          junction is "?" in junction_tiling_hits. These genes
+##                          were placed in the same chain because each is
+##                          independently connected to another gene in the chain
+##                          through a different reference protein — not because
+##                          they themselves share a common reference where their
+##                          alignments tile end-to-end.
+##
+##                          In graph terms: the chain is connected, but the edge
+##                          between at least one consecutive gene pair is absent
+##                          and the connection is inferred transitively through
+##                          shared membership in overlapping pairs.
+##
+##                          Two genes with no shared tiling reference may be:
+##                            (a) Genuine split fragments whose split site falls
+##                                in a region too diverged for shared blast hits.
+##                                IsoSeq spanning the ? junction confirms the merge.
+##                            (b) Two different genes (paralogs, different family
+##                                members, syntenic cluster neighbors) that each
+##                                tile with a shared third gene but not with each
+##                                other. This is the mechanism behind the ROBO
+##                                case (same paralog type, different strands joined
+##                                via shared N-terminal alignment) and the GABRB2
+##                                case (gamma and beta GABA receptor subunits joined
+##                                via shared Cys-loop fold on a third reference).
+##
+##                          Key diagnostic: if the gene flanking the ? junction has
+##                          "?" in the evalues column vs the chain best_hit, that
+##                          gene has no direct evidence against the chain's own
+##                          reference protein — a strong signal it does not belong.
+##                          Also check that descriptions on both sides of the ?
+##                          match. FULL_SPAN IsoSeq crossing the ? junction is the
+##                          most reliable confirmation.
+##
+##                          TRANSITIVE_JOIN compounds other flags.
+##                          STRONG,TRANSITIVE_JOIN warrants the same caution as a
+##                          WEAK_END case. SINGLE_HIT,TRANSITIVE_JOIN with no
+##                          IsoSeq is the highest-risk category in the merge table.
+##
+##     WEAK_END           : a terminal junction has 1-2 hits but survived trimming
+##                          (asymmetry threshold not met). Low evidence at one end.
+##
+##     WEAK_INTERNAL      : an internal junction has 1-2 hits but both neighbors
+##                          did not both meet the threshold for splitting.
+##
+##     SINGLE_HIT         : all junctions have exactly 1 tiling hit.
+##                          Same interpretation caveats as for 2-gene pairs above.
+##
+##     LOW_COV            : best_combined_cov_pct < 60%
+##
+##     SKIPPED_GENE       : at least one junction spans a non-adjacent gene.
 ##
 ##   Interpreting combinations:
-##     STRONG                  -> act on this merge
-##     STRONG,SKIPPED_GENE     -> strong evidence but check skipped gene first —
-##                                it may need to be added to the merge
-##     SINGLE_HIT              -> verify with IsoSeq before acting
-##     WEAK_END,LOW_COV        -> low confidence, review carefully
-##     STRONG,LOW_COV          -> protein evidence is consistent but incomplete
-##                                may be domain-sharing rather than split gene
+##     STRONG                         -> act on this merge
+##     STRONG,SKIPPED_GENE            -> strong evidence but check skipped gene;
+##                                       it may need to be added to the merge
+##     STRONG,TRANSITIVE_JOIN         -> inspect the ? junction carefully;
+##                                       require IsoSeq if possible
+##     SINGLE_HIT                     -> inspect hit_desc and pident; see above
+##     SINGLE_HIT,TRANSITIVE_JOIN     -> high risk; require IsoSeq FULL_SPAN
+##     WEAK_END,LOW_COV               -> low confidence; review carefully
+##     STRONG,LOW_COV                 -> protein evidence consistent but incomplete;
+##                                       may be domain sharing, not a split gene
+##     LARGE_SPAN,SINGLE_HIT          -> high FP risk; require IsoSeq
+##     LARGE_SPAN_EXTREME             -> add to skip_flags unless IsoSeq confirms
+##     MULTI_ISOFORM_JOIN             -> merge proceeds; verify transcript structure
 ##
 ## =============================================================================
 
-my $no_asym_trim = 0;
-GetOptions("no_asym_trim" => \$no_asym_trim)
-    or die "usage: $0 [--no_asym_trim] blast gff subject_fa query_fa\n";
+my $no_asym_trim       = 0;
+my $large_span_warn    = 500000;   # bp: flag LARGE_SPAN above this
+my $large_span_extreme = 2000000;  # bp: flag LARGE_SPAN_EXTREME above this
 
-my $blast      = shift or die "usage: $0 [--no_asym_trim] blast gff subject_fa query_fa\n";
-my $gff        = shift or die "usage: $0 [--no_asym_trim] blast gff subject_fa query_fa\n";
-my $subject_fa = shift or die "usage: $0 [--no_asym_trim] blast gff subject_fa query_fa\n";
-my $query_fa   = shift or die "usage: $0 [--no_asym_trim] blast gff subject_fa query_fa\n";
+GetOptions(
+    "no_asym_trim"         => \$no_asym_trim,
+    "large_span_warn=i"    => \$large_span_warn,
+    "large_span_extreme=i" => \$large_span_extreme,
+) or die "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] blast gff subject_fa query_fa\n";
+
+my $usage_str = "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] blast gff subject_fa query_fa\n";
+my $blast      = shift or die $usage_str;
+my $gff        = shift or die $usage_str;
+my $subject_fa = shift or die $usage_str;
+my $query_fa   = shift or die $usage_str;
 
 my $wiggle         = 15;  # aa wiggle room for tiling junction
 my $max_dist       =  4;  # max genomic rank distance between gene pair
 my $asym_threshold =  6;  # min hits on strong side to trigger trim/split
 my $low_cov_thresh = 60;  # combined_cov_pct below this gets LOW_COV flag
 my $strong_thresh  =  3;  # min junction hits for STRONG flag
+my $frag_scov_max  = 85;  # scovhsp <= this is always a fragment candidate
+my $frag_qcov_min  = 90;  # qcovhsp >= this enables the soft scovhsp extension
+my $frag_scov_soft = 90;  # with qcovhsp >= frag_qcov_min, keep if scovhsp < this
 
 # ---------------------------------------------------------------------------
 # Load reference protein descriptions from subject fasta headers
@@ -384,9 +517,11 @@ while (my $line = <FA>){
 close FA;
 
 # ---------------------------------------------------------------------------
-# Build transcript->gene mapping directly from GFF mRNA features
+# Build transcript->gene mapping directly from GFF mRNA features.
+# Also count transcripts per gene — used for MULTI_ISOFORM_JOIN flag.
 # ---------------------------------------------------------------------------
-my %isoforms;  # transcript_id -> gene_id
+my %isoforms;           # transcript_id -> gene_id
+my %gene_n_transcripts; # gene_id -> number of annotated transcripts
 open GFF0, $gff or die "cant open gff: $gff $!\n";
 while (my $line = <GFF0>) {
     chomp $line;
@@ -397,6 +532,7 @@ while (my $line = <GFF0>) {
     my ($gene_id) = $f[8] =~ /Parent=([^;]+)/;
     next unless defined $tid && defined $gene_id;
     $isoforms{$tid} = $gene_id;
+    $gene_n_transcripts{$gene_id}++;
 }
 close GFF0;
 
@@ -494,13 +630,40 @@ while (my $line = <BLAST>){
     next if $line =~ /^#/;
     my ($query, $subject, $per_identity, $alignment_length, $mismatches,
         $gap_opens, $qstart, $qend, $sstart, $send, $evalue, $bitscore,
-        $scovhsp, $slen) = split "\t", $line;
+        $scovhsp, $slen, $qcovhsp, $qlen) = split "\t", $line;
 
     # resolve transcript to gene level
     my $gene_id = $isoforms{$query} // $query;
     $subject_len{$subject} = $slen;
 
-    if ($evalue <= 1e-20 && $scovhsp <= 85){
+    # ---------------------------------------------------------------------------
+    # FRAGMENT FILTER
+    # Keep hits where the aligned gene appears to be a partial homolog, not a
+    # complete ortholog. Two conditions define a fragment:
+    #
+    #   Classic:  scovhsp <= frag_scov_max (default 85%)
+    #     The alignment covers at most 85% of the reference protein. The gene
+    #     is too short to represent the full-length ortholog.
+    #
+    #   Soft extension (requires qcovhsp in diamond output):
+    #     qcovhsp >= frag_qcov_min (default 90%)
+    #     AND scovhsp < frag_scov_soft (default 90%)
+    #     The alignment covers nearly the entire query protein (the annotated
+    #     CDS is internally complete) but accounts for less than 90% of the
+    #     reference protein. This catches split fragments of shorter proteins
+    #     — e.g., a 200aa annotated CDS that is genuinely a fragment of a 280aa
+    #     gene — which fall in the 86-89% scovhsp range and would be missed by
+    #     the classic filter alone.
+    #
+    # The classic and soft conditions are OR'd: either is sufficient.
+    # If qcovhsp is absent from the blast output (undef), only the classic
+    # condition applies and behavior is identical to pre-qcovhsp versions.
+    # ---------------------------------------------------------------------------
+    my $is_fragment = ($scovhsp <= $frag_scov_max)
+        || (defined $qcovhsp && $qcovhsp >= $frag_qcov_min
+            && $scovhsp < $frag_scov_soft);
+
+    if ($evalue <= 1e-20 && $is_fragment) {
         # keep only the best-coverage HSP per gene-subject pair
         if (!exists $subjects{$subject}{$gene_id} ||
              $subjects{$subject}{$gene_id}{cov} < $scovhsp){
@@ -910,14 +1073,31 @@ sub compute_flags {
     my @ordered = @$ordered_ref;
     my @flags;
 
-    # LOW_COV applies to all
+    # LARGE_SPAN / LARGE_SPAN_EXTREME: total genomic footprint of the merged locus.
+    # Calculated from the outermost coordinates of all genes in the chain.
+    # A large span is biologically plausible for some gene families but should be
+    # reviewed — very large spans combined with weak evidence are high-risk merges.
+    my $chain_start = (sort { $a <=> $b } map { $locs{$_}{start} } @ordered)[0];
+    my $chain_end   = (sort { $b <=> $a } map { $locs{$_}{end}   } @ordered)[0];
+    my $chain_span  = $chain_end - $chain_start + 1;
+    if    ($chain_span > $large_span_extreme) { push @flags, "LARGE_SPAN_EXTREME" }
+    elsif ($chain_span > $large_span_warn)    { push @flags, "LARGE_SPAN"         }
+
+    # LOW_COV applies to all chain sizes
     push @flags, "LOW_COV" if $best_pct < $low_cov_thresh;
 
-    # SKIPPED_GENE: any junction with dist > 1
+    # SKIPPED_GENE: any junction with genomic dist > 1
     my @skipped = get_skipped_genes(@ordered);
     push @flags, "SKIPPED_GENE" if @skipped;
 
-    # 2-gene pairs: only SINGLE_HIT possible beyond above
+    # MULTI_ISOFORM_JOIN: any source gene has more than one annotated transcript.
+    # The merge script builds transcripts by cross-product (N*M combinations).
+    # Not all cross-product transcripts are necessarily biologically real —
+    # they require transcript-level evidence (IsoSeq isoform data) to validate.
+    push @flags, "MULTI_ISOFORM_JOIN"
+        if grep { ($gene_n_transcripts{$_} // 1) > 1 } @ordered;
+
+    # 2-gene pairs: only SINGLE_HIT possible beyond the above
     if (@ordered == 2) {
         my $hits = $pair_tiling{"$ordered[0]\t$ordered[1]"} // 0;
         push @flags, "SINGLE_HIT" if $hits == 1;
@@ -925,9 +1105,20 @@ sub compute_flags {
     }
 
     # 3+ gene chains
-    my @hits = get_junction_hits(@ordered);
+    my @hits    = get_junction_hits(@ordered);
     my @numeric = grep { defined $_ } @hits;
-    return join(",", @flags) unless @numeric;
+
+    # TRANSITIVE_JOIN: one or more consecutive genes in this chain have no direct
+    # pairwise tiling evidence between them (junction = "?" in junction_tiling_hits).
+    # They were placed in the same chain only because each is independently connected
+    # to another gene via a different reference protein — not because they themselves
+    # share a common reference where their alignments tile end-to-end.
+    # See FLAG DEFINITIONS for full description and biological implications.
+    push @flags, "TRANSITIVE_JOIN" if grep { !defined $_ } @hits;
+
+    unless (@numeric) {
+        return @flags ? join(",", @flags) : "";
+    }
 
     my $min_hits = (sort { $a <=> $b } @numeric)[0];
     my $max_hits = (sort { $b <=> $a } @numeric)[0];
@@ -935,11 +1126,11 @@ sub compute_flags {
     if ($min_hits >= $strong_thresh) {
         push @flags, "STRONG";
     } elsif ($min_hits == 0 && $max_hits == 0) {
-        # all unknown
+        # all unknown — no numeric flag to add
     } else {
-        my $all_one   = 1;
-        my $weak_end  = 0;
-        my $weak_int  = 0;
+        my $all_one  = 1;
+        my $weak_end = 0;
+        my $weak_int = 0;
 
         for my $i (0 .. $#hits) {
             my $h = $hits[$i] // 0;
@@ -1064,7 +1255,7 @@ for my $chain (sort {
         my $best_pct = $best_pair->{best_pct};
         my $best_gap = $best_pair->{best_gap};
         my $flag     = compute_flags(\@ordered, $best_pct) ;
-        $flag = 'noflag' if length $flag < 2;
+        $flag = 'CLEAN' if $flag eq "";
       
 
         print MERGE join("\t",

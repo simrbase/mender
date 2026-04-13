@@ -34,8 +34,49 @@ gff = genomic.gff
 proteome_fa = protein.aa.fa
 
 ## Reference proteome FASTA for diamond blastp (the subject/database).
-## Should be a well-annotated proteome from a closely related species.
-## For vertebrates, Anolis carolinensis works well.
+## Should be a well-annotated proteome from a phylogenetically close species.
+##
+## --- REFERENCE PROTEOME SELECTION GUIDANCE ---
+##
+## The ideal reference is both closely related (strong blast hits, more tiling
+## hits per split gene) and well-annotated (fewer false positives from reference
+## misannotations). These goals are sometimes in tension. Key criteria:
+##
+##   Completeness: prefer proteomes with high BUSCO vertebrata scores (>90%).
+##     Missing genes in the reference create blind spots — split genes whose
+##     true ortholog is absent from the reference cannot be detected.
+##
+##   Annotation quality: RefSeq or Ensembl annotations are more reliable than
+##     automated genome-only predictions. Avoid references where the annotation
+##     itself was produced by the same gene caller you are trying to fix.
+##
+##   Phylogenetic distance: closer is better for hit sensitivity, but too close
+##     risks inheriting the same annotation errors (a gene split in both the
+##     query and the reference will produce no tiling signal at all). A rough
+##     rule: use the closest well-annotated species available, not the closest
+##     sequenced species.
+##
+##   Isoform representation: if the reference proteome includes many isoforms
+##     per gene (Ensembl typically does), num_tiling_hits will be higher for
+##     multi-copy and multi-isoform gene families. This inflates hit counts for
+##     those families relative to single-copy genes. Proteomes filtered to one
+##     canonical protein per gene give more comparable hit counts across families,
+##     but reduce total sensitivity. Choose based on whether you want hit counts
+##     to be comparable (filtered) or maximally sensitive (all isoforms).
+##
+##   Multi-proteome strategy: running this pipeline against two independent
+##     reference proteomes and taking the intersection of supported merge
+##     candidates provides substantially stronger evidence than a single reference.
+##     Pairs supported by both references are the most reliable. Pairs supported
+##     by only one reference warrant closer inspection.
+##     See README for the consensus_merge_candidates.txt workflow.
+##
+## Suggested references by taxon (in rough priority order):
+##   Squamates:  Anolis carolinensis (RefSeq / Ensembl), Pogona vitticeps (Ensembl)
+##   Mammals:    human (GRCh38 RefSeq), mouse (GRCm39 RefSeq)
+##   Birds:      chicken (GRCg7b RefSeq), zebra finch
+##   Fish:       zebrafish (GRCz11 RefSeq), medaka
+##
 subject_fa = anolis_proteome.fa
 
 ## IsoSeq GFF file (mRNA features from long-read transcriptome).
@@ -67,6 +108,20 @@ threads = 4
 ## E-value cutoff for diamond blastp.
 ## Only hits with evalue <= this value are kept.
 evalue = 1e-20
+
+## NOTE on diamond output format:
+## The pipeline requires these fields in this order:
+##   qseqid sseqid pident length mismatch gapopen qstart qend
+##   sstart send evalue bitscore scovhsp slen qcovhsp qlen
+##
+## qcovhsp (query coverage per HSP) and qlen (query sequence length) are
+## required to enable the soft fragment filter in find_split_genes.pl.
+## This filter catches split fragments of shorter proteins (86-89% scovhsp)
+## that the classic scovhsp-only filter would exclude. If your diamond
+## version does not support qcovhsp, remove it from the --outfmt string
+## in run_mender.pl — the classic filter (scovhsp <= 85%) will apply.
+##
+## run_mender.pl builds the correct --outfmt string automatically.
 
 ## ============================================================
 [ids]
@@ -123,17 +178,46 @@ fix_partial = yes
 ## Rows whose flag column contains any of these terms are skipped.
 ##
 ## Available flags:
-##   SKIPPED_GENE  a non-adjacent gene sits inside the merge locus
-##                 — review manually before merging (recommended to skip)
-##   LOW_COV       combined coverage < 60% — may be domain sharing not split gene
-##                 — generally safe to skip
-##   SINGLE_HIT    all junctions have exactly 1 tiling hit — thin protein evidence
-##                 — keep if you have good IsoSeq support, skip if protein-only
-##   WEAK_END      terminal junction has 1-2 tiling hits but survived trimming
-##   WEAK_INTERNAL internal junction has 1-2 hits but survived splitting
-##   STRONG        all junctions >= 3 tiling hits — you would NOT skip this
-##   noflag        directly adjacent, 2+ hits, coverage >= 60% — solid candidate
+##   SKIPPED_GENE         a non-adjacent gene sits inside the merge locus
+##                        — review manually before merging (recommended to skip)
+##   LOW_COV              combined coverage < 60% — may be domain sharing, not a split gene
+##                        — generally safe to skip
+##   SINGLE_HIT           exactly 1 tiling hit at all junctions
+##                        — this is a REVIEW flag, not a default skip. For single-copy
+##                          genes in the reference, 1 hit is the expected maximum.
+##                          Inspect hit_desc and pident before deciding. Skip only if
+##                          the hit is against a generic multi-domain protein with low
+##                          identity and you have no IsoSeq support.
+##   TRANSITIVE_JOIN      consecutive genes in the chain have no direct tiling evidence;
+##                        connection is inferred transitively. STRONG,TRANSITIVE_JOIN
+##                        merges should be treated with caution — verify with IsoSeq.
+##   MULTI_ISOFORM_JOIN   at least one source gene has multiple transcripts; merged gene
+##                        will contain cross-product isoform combinations not all of
+##                        which may be real.
+##   LARGE_SPAN           merged locus > large_span_warn (default 500kb)
+##   LARGE_SPAN_EXTREME   merged locus > large_span_extreme (default 2Mb)
+##                        — strongly recommended to skip unless IsoSeq confirms
+##   WEAK_END             terminal junction has 1-2 tiling hits but survived trimming
+##   WEAK_INTERNAL        internal junction has 1-2 hits but survived splitting
+##   STRONG               all junctions >= 3 tiling hits — you would NOT skip this
+##   CLEAN                directly adjacent, 2+ hits, coverage >= 60% — no concerns flagged
+##
+## Conservative run (protein evidence only, no IsoSeq):
+##   skip_flags = SKIPPED_GENE,LOW_COV,SINGLE_HIT,TRANSITIVE_JOIN,LARGE_SPAN_EXTREME
+##
+## Liberal run (then validate merges with translation/MSA step):
+##   skip_flags = LOW_COV
+##   (use the translation validation output to filter the result)
+##
 skip_flags = SKIPPED_GENE,LOW_COV
+
+## large_span_warn: merged locus genomic span (bp) above which LARGE_SPAN is flagged.
+## Set to 0 to disable. Default: 500000 (500 kb).
+large_span_warn = 500000
+
+## large_span_hard: merged locus genomic span (bp) above which LARGE_SPAN_EXTREME
+## is flagged. Set to 0 to disable. Default: 2000000 (2 Mb).
+large_span_hard = 2000000
 
 ## flags: include filter — only process rows whose flag matches one of these.
 ## Use 'all' to process all rows (subject to skip_flags above).

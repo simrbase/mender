@@ -112,7 +112,7 @@ awk -F'\t' 'NR>1 {print $2}' split_genes_merge.txt | sort -n | uniq -c
 
 echo ""
 echo "--- Flag distribution ---"
-echo "noflag        = directly adjacent, 2+ tiling hits, coverage >= 60%"
+echo "CLEAN         = directly adjacent, 2+ tiling hits, coverage >= 60% — no concerns flagged"
 echo "STRONG        = all junctions >= 3 hits (chains only)"
 echo "SINGLE_HIT    = all junctions have exactly 1 tiling hit"
 echo "WEAK_END      = low-evidence terminal junction survived trimming"

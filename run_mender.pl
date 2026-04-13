@@ -111,6 +111,8 @@ my $min_cov            = cfg("merge_filters", "min_cov",            "0");
 my $require_isoseq     = cfg("merge_filters", "require_isoseq",     "");
 my $isoseq_min_span    = cfg("merge_filters", "isoseq_min_spanning","0");
 my $asym_trim          = cfg("merge_filters", "asym_trim",          "yes");
+my $large_span_warn    = cfg("merge_filters", "large_span_warn",    "500000");
+my $large_span_hard    = cfg("merge_filters", "large_span_hard",    "2000000");
 
 # validation
 my $run_gt    = cfg("validation", "run_gt",   "yes");
@@ -197,6 +199,8 @@ print "Gene template:   $gene_template\n";
 print "Trans template:  $trans_template\n";
 print "Skip flags:      $skip_flags\n";
 print "Fix partial:     $fix_partial\n";
+print "Large span warn: $large_span_warn bp\n";
+print "Large span hard: $large_span_hard bp\n";
 print "=" x 60, "\n";
 
 # create workdir
@@ -259,7 +263,7 @@ if ($run_steps{2}) {
         "--db $diamond_db " .
         "--query $clean_fa " .
         "--outfmt 6 qseqid sseqid pident length mismatch gapopen " .
-        "qstart qend sstart send evalue bitscore scovhsp slen " .
+        "qstart qend sstart send evalue bitscore scovhsp slen qcovhsp qlen " .
         "--threads $threads " .
         "--evalue $evalue " .
         "--out $diamond_out",
@@ -305,6 +309,8 @@ if ($run_steps{4}) {
     run_cmd(
         "$perl_bin $find_script " .
         ($asym_trim =~ /^no$/i ? "--no_asym_trim " : "") .
+        ($large_span_warn  ? "--large_span_warn $large_span_warn "       : "") .
+        ($large_span_hard  ? "--large_span_extreme $large_span_hard "    : "") .
         "$diamond_out " .
         "$gff " .
         "$subject_fa " .

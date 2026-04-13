@@ -38,7 +38,7 @@ use warnings;
 ##
 ## Options:
 ##   --flags FLAGLIST   comma-sep list of flags to process (default: all)
-##                      e.g. --flags STRONG,noflag
+##                      e.g. --flags STRONG,CLEAN
 ##                      Use 'all' to process every row regardless of flag
 ##   --min_tiling N     only process merges with max_tiling_hits >= N (default: 1)
 ##   --min_cov N        only process merges with combined_cov_pct >= N (default: 0)
@@ -99,13 +99,26 @@ use warnings;
 ##
 ## --skip_flags accepts any comma-separated combination of these values:
 ##
-##   STRONG          all junctions have >= 3 tiling hits (you would not skip this)
-##   SINGLE_HIT      all junctions have exactly 1 tiling hit
-##   WEAK_END        terminal junction has 1-2 hits but survived trimming
-##   WEAK_INTERNAL   internal junction has 1-2 hits but survived splitting
-##   LOW_COV         combined coverage < 60% — likely domain sharing not split gene
-##   SKIPPED_GENE    a non-adjacent gene sits inside the merge locus — review manually
-##   noflag          2+ tiling hits, coverage >= 60%, directly adjacent — solid candidate
+##   STRONG               all junctions have >= 3 tiling hits (you would not skip this)
+##   SINGLE_HIT           all junctions have exactly 1 tiling hit.
+##                        This is a REVIEW flag, not a default skip. For single-copy
+##                        genes in the reference proteome, 1 hit is the expected maximum.
+##                        Inspect hit_desc and pident before deciding. See FLAG DEFINITIONS
+##                        in find_split_genes.pl for full guidance.
+##   WEAK_END             terminal junction has 1-2 hits but survived trimming
+##   WEAK_INTERNAL        internal junction has 1-2 hits but survived splitting
+##   LOW_COV              combined coverage < 60% — likely domain sharing, not split gene
+##   SKIPPED_GENE         a non-adjacent gene sits inside the merge locus — review manually
+##   TRANSITIVE_JOIN      one or more consecutive genes in the chain have no direct
+##                        pairwise tiling evidence; connection is inferred transitively.
+##                        Compounds other flags: STRONG,TRANSITIVE_JOIN should be treated
+##                        with the same caution as WEAK_END. Always check IsoSeq.
+##   MULTI_ISOFORM_JOIN   at least one source gene has multiple transcripts; merged gene
+##                        will contain cross-product isoform combinations.
+##   LARGE_SPAN           merged locus exceeds large_span_warn genomic span (default 500kb)
+##   LARGE_SPAN_EXTREME   merged locus exceeds large_span_extreme (default 2Mb) —
+##                        strongly recommended to add to skip_flags unless IsoSeq confirms
+##   CLEAN                2+ tiling hits, coverage >= 60%, directly adjacent — no concerns flagged
 ##
 ## --isoseq_flag values (for reference, used in validated_merge.txt col 20):
 ##   FULL_SPAN       at least one read spans all genes — strong confirmation
@@ -801,15 +814,32 @@ for my $group (@merge_groups) {
     # build merged_from list
     my $merged_from = join(",", @genes);
 
+    # detect multi-isoform sources: any gene with > 1 transcript
+    # (the MULTI_ISOFORM_JOIN flag in the merge table comes from find_split_genes.pl;
+    # here we re-check independently and record it as a GFF attribute so the
+    # information is preserved in the output annotation)
+    my $multi_isoform = 0;
+    for my $g (@genes) {
+        $multi_isoform = 1 if scalar(@{ $gene_transcripts{$g} // [] }) > 1;
+    }
+    if ($multi_isoform) {
+        my @multi = grep { scalar(@{ $gene_transcripts{$_} // [] }) > 1 } @genes;
+        print STDERR "INFO: MULTI_ISOFORM_JOIN [$merge_id]: cross-product transcripts created; ",
+                     "verify isoform structure. Multi-isoform source genes: ",
+                     join(",", @multi), "\n";
+    }
+
     # new gene GFF line
-    my $new_gene_attrs = join(";",
+    my @gene_attr_parts = (
         "ID=$new_gene_id",
         "Name=$new_gene_id",
         "merged_from=$merged_from",
         "merge_source=Mender",
         "merge_id=$merge_id",
-        "merge_date=$date"
+        "merge_date=$date",
     );
+    push @gene_attr_parts, "multi_isoform_join=1" if $multi_isoform;
+    my $new_gene_attrs = join(";", @gene_attr_parts);
     my $new_gene_line = join("\t",
         $chr, "Mender", "gene",
         $new_start, $new_end,
