@@ -175,7 +175,7 @@ while (my $line = <MERGE>){
     #   — check if any terminal gene is absent from ALL spanning reads
     #   — this is a structural signal regardless of expression stage
     # ---------------------------------------------------------------------------
-    my $isoseq_flag = "none";
+    my $isoseq_flag = "NO_SPANNERS";
 
     if ($spanning_count > 0) {
         # check if any read spans all genes

@@ -123,7 +123,7 @@ use warnings;
 ## --isoseq_flag values (for reference, used in isoseq_validated.txt col 20):
 ##   FULL_SPAN       at least one read spans all genes — strong confirmation
 ##   PARTIAL_SPAN    reads exist but don't reach a terminal gene — handled by --fix_partial
-##   none            no spanning reads — may reflect expression stage not gene structure
+##   NO_SPANNERS     no spanning reads — may reflect expression stage not gene structure
 ##
 ## --gene_template / --trans_template bracket notation:
 ##   [GCOUNT:N]   gene counter, zero-padded to N digits, incremented per new gene

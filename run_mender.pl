@@ -653,8 +653,11 @@ if ($run_steps{9}) {
 
     check_file($target_gff, "GFF for AGAT validation");
 
+    (my $agat_out = $target_gff) =~ s/(\.[^.]+)$/_agat$1/;
+    print "  AGAT corrected GFF: $agat_out\n";
+
     run_cmd(
-        "$agat_bin -g $target_gff -o /dev/null 2>&1 | " .
+        "$agat_bin -g $target_gff -o $agat_out 2>&1 | " .
         "grep -i 'error\\|warn' | head -20",
         "Gene-model check (AGAT)"
     );

@@ -64,7 +64,8 @@ Box style legend:
 ║                                                              ║
 ║  Tiling test                                                 ║
 ║    · Do two adjacent flagged fragments together span the     ║
-║      same reference protein end-to-end?  (±15 aa tolerance) ║
+║      same reference protein end-to-end?                      ║
+║      (±15 aa tolerance in reference protein coordinates)     ║
 ║    · If yes: the pair is a split-gene candidate              ║
 ║                                                              ║
 ║  Chaining                                                    ║
@@ -83,7 +84,8 @@ Box style legend:
 ╎                                                              ╎
 ╎  · FULL_SPAN:    ≥1 read spans all genes in the locus        ╎
 ╎  · PARTIAL_SPAN: reads present but none reach a terminal     ╎
-╎  · none:         no spanning reads found                     ╎
+╎    fragment                                                  ╎
+╎  · NO_SPANNERS:  no spanning reads found                     ╎
 └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
                               ║
 ╔══════════════════════════════════════════════════════════════╗
@@ -179,7 +181,7 @@ flags are comma-separated in the `flag` column.
 |---|---|
 | `FULL_SPAN` | ≥1 long-read transcript spans all genes in the locus — strong confirmation |
 | `PARTIAL_SPAN` | Reads present but none reach a terminal gene — terminal fragment may not belong; use `fix_partial` |
-| `none` | No spanning reads found — may reflect expression timing, not gene structure |
+| `NO_SPANNERS` | No spanning reads found — may reflect expression timing, not gene structure |
 
 ---
 
@@ -209,3 +211,429 @@ flags are comma-separated in the `flag` column.
 | `--dry_run` | Print all commands without executing |
 | `run_translation_validation = no` | Skip step 8 |
 | `run_agat = no` | Skip step 9 |
+
+---
+
+## Step-by-step descriptions
+
+---
+
+### Inputs
+
+Mender requires three core sequence/annotation files: a GFF3 annotation of
+the genome being curated, the protein sequences translated from that
+annotation (the *query proteome*), and a protein FASTA from a closely
+related, well-annotated species (the *reference proteome*). The GFF3 must
+be sorted so that parent features (gene, mRNA) appear before their children
+(exon, CDS); unsorted files will cause downstream steps to silently
+mis-reconstruct merged gene models.
+
+The genome FASTA itself is only required for step 8 (translation
+validation) — if you are skipping that step it does not need to be
+provided.
+
+IsoSeq long-read transcript data is entirely optional but strongly
+recommended when available. Even partial IsoSeq coverage substantially
+reduces false-positive merges because co-transcription of adjacent
+fragments is direct molecular evidence that they belong to a single gene,
+whereas protein homology alone cannot rule out recent tandem gene
+duplication.
+
+---
+
+### Step 1 — Prepare
+
+**Biological rationale.** DIAMOND blastp (step 2) will fail or produce
+misleading alignments if the query FASTA contains sequences with internal
+stop codons (`*`) or dots (`.`). These characters appear in translated
+genome annotations when the underlying CDS has a frame-shift, a sequencing
+gap, or an annotation error. A truly split gene model would be expected to
+translate cleanly — it is just truncated relative to its ortholog. Keeping
+corrupted sequences would waste alignment time and could generate spurious
+low-coverage hits that mimic real split-gene signal.
+
+**What happens.** Each protein FASTA record is read in full (including
+multi-line sequences) and the terminal stop character, if present, is
+stripped — a trailing `*` or `.` is standard annotation convention and
+carries no information useful to DIAMOND. The remaining sequence is then
+checked: if any internal `*` or `.` is found the entire record is
+discarded. Gene features are extracted from the GFF (lines containing
+`\tgene\t`) into a gene-only GFF for use in bedtools overlap operations
+(step 3). If an IsoSeq GFF was provided, mRNA features are similarly
+extracted.
+
+**Inputs:** `proteome_fa`, `gff`, `isoseq_gff` (optional)  
+**Outputs:** cleaned protein FASTA, gene GFF, IsoSeq mRNA GFF (if used)
+
+---
+
+### Step 2 — Protein homology search
+
+**Biological rationale.** The core hypothesis driving Mender is that when a
+single gene has been erroneously split into two adjacent models, each
+fragment will align to the same reference ortholog — but each alignment
+will cover only a portion of it. A 500 aa reference protein aligned by two
+250 aa query proteins, one covering residues 1–250 and the other 251–500,
+is the canonical split-gene signature. Conversely, a single well-annotated
+gene should align across most of its ortholog's length.
+
+DIAMOND blastp is used because it is orders of magnitude faster than
+BLAST for large proteomes while producing essentially identical
+sensitivity for this type of whole-proteome vs whole-proteome search.
+
+**What happens.** A DIAMOND database is built from the reference proteome.
+The cleaned query proteome (step 1 output) is searched against it using
+tabular output format 6. Beyond the standard columns, the search explicitly
+requests `scovhsp` (alignment coverage as a fraction of the reference
+protein length), `slen` (reference protein length), `qcovhsp` (alignment
+coverage as a fraction of the query protein length), and `qlen` (query
+protein length). These four columns are required by step 4: `scovhsp` and
+`slen` drive the primary fragment filter, while `qcovhsp` and `qlen` were
+added specifically to catch split fragments of shorter proteins that would
+otherwise be missed by the reference-coverage threshold alone. The e-value
+cutoff and number of threads are configurable.
+
+**Key parameters:** `evalue` (default 1e-5), `threads`  
+**Inputs:** cleaned query proteome (step 1), reference proteome FASTA  
+**Outputs:** `diamond.out` — tabular blastp results
+
+---
+
+### Step 3 — IsoSeq overlap mapping  *(conditional)*
+
+**Biological rationale.** A long-read IsoSeq transcript that spans two
+adjacent annotated gene models is direct molecular evidence that those two
+gene models are co-transcribed — i.e., they are fragments of one gene. This
+step pre-computes which IsoSeq transcripts overlap which gene models so
+that step 5 can count spanning reads efficiently for every candidate locus.
+
+**What happens.** `bedtools intersect` is run with the IsoSeq mRNA GFF as
+the `-a` file and the gene feature GFF as `-b`. The output is parsed to
+produce a two-column read-to-gene overlap table (IsoSeq transcript ID →
+gene ID). This table is the input to step 5.
+
+**Inputs:** IsoSeq mRNA GFF (step 1), gene GFF (step 1)  
+**Outputs:** `overlaps.txt` — transcript-to-gene overlap table
+
+---
+
+### Step 4 — Find split-gene candidates
+
+**Biological rationale.** This is the analytical core of Mender. Two
+adjacent gene models are declared a split-gene candidate when their protein
+products together tile a single reference ortholog end-to-end. "Tiling"
+means the DIAMOND alignments of fragment A and fragment B cover
+non-overlapping, complementary regions of the same reference sequence such
+that their combined coverage approaches 100%.
+
+The tiling criterion distinguishes a split gene from other common
+scenarios: a tandem duplicate (both copies align independently across the
+full ortholog), a multi-domain protein that shares only one domain with its
+best reference hit (low combined coverage, caught by `LOW_COV` flag), or an
+unrelated protein whose alignment is coincidentally short.
+
+**Fragment filter.** A query protein is treated as a fragment candidate if
+its best DIAMOND alignment covers ≤85% of the reference protein length
+(`scovhsp`). A second filter also checks query-side coverage (`qcovhsp`):
+a protein that is itself short but aligns well across its own length can
+still be a fragment of a larger gene — the reference-coverage threshold
+alone would not flag it. Both criteria are evaluated so that fragments of
+shorter proteins are not missed.
+
+**Tiling test.** For each pair of genomically adjacent fragment candidates
+(within `max_dist = 4` gene positions of each other on the same
+chromosome), Mender checks whether their DIAMOND alignment coordinates on
+the same reference protein are complementary. The key measure is
+`combined_cov_pct`: the span from the leftmost alignment start to the
+rightmost alignment end on the reference protein, divided by the reference
+protein length. This is a span measure, not the sum of individual
+coverages — a 5 aa gap between the two alignments is included in the span
+and slightly inflates the percentage, but for typical gaps this is
+negligible. The fragments must tile the reference within a configurable
+`wiggle` tolerance (default ±15 aa, measured in reference protein
+coordinates). A positive tiling gap means the alignments don't quite meet;
+a negative gap means they overlap slightly; both are acceptable within
+tolerance. If the test passes, the pair is a split-gene candidate.
+
+*Example:* Reference protein = 500 aa. Gene A aligns to positions 10–200;
+gene B aligns to positions 205–480. Combined span = 480 − 10 + 1 = 471 aa.
+`combined_cov_pct` = 471/500 = 94.2%. Tiling gap = 205 − 200 = 5 aa
+(positive, within wiggle=15). This pair passes.
+
+**num_tiling_hits.** For a pair to record a tiling hit against a given
+reference protein, both genes must independently have a fragment-level
+alignment against that same protein, and those alignments must tile. The
+number of distinct reference proteins that independently support the pair
+in this way is `num_tiling_hits`. High counts (5+) arise when the split
+boundary falls at a structurally conserved position shared across a protein
+family. Low counts (1–2) are common for single-copy genes and do not mean
+false positive — they simply reflect limited representation in the reference
+proteome. If the two fragments have diverged enough to preferentially hit
+*different* reference proteins with no overlap in their hit lists, the pair
+will not appear in the output at all. This is a known blind spot: because
+IsoSeq validation in step 5 only operates on candidates already identified
+by the protein homology search, it cannot rescue pairs that were never
+found here. Such cases would need to be identified and added to the merge
+table manually.
+
+**Chaining.** When three or more adjacent fragments all tile the same
+reference protein, they are linked into a chain: A→B→C. Each junction in
+the chain is evaluated independently. A junction is considered weak if it
+has exactly 1 tiling hit AND the maximum tiling hits seen at any other
+junction in the chain is ≥ 6 (the asymmetry threshold). Weak terminal
+junctions cause the chain to be trimmed (the terminal gene is dropped).
+Weak internal junctions cause the chain to be split into two separate
+candidates at that point. Both trimming and splitting are applied
+iteratively before the chain is written to the merge table. Use
+`--no_asym_trim` to disable this behaviour — useful when the reference
+proteome is phylogenetically distant and overall tiling hit counts are
+low.
+
+**Quality flags.** Every candidate is annotated with one or more quality
+flags summarising the evidence (see flag table above). Flags are carried
+forward through all subsequent steps and appear in the final merge table.
+
+**Key parameters:** `large_span_warn`, `large_span_extreme`, `--no_asym_trim`  
+**Inputs:** DIAMOND output (step 2), GFF, reference proteome FASTA, cleaned query proteome  
+**Outputs:** `merge_candidates.txt`, `split_genes_summary.txt`, `split_genes_detail.txt`
+
+---
+
+### Step 5 — IsoSeq validation  *(conditional)*
+
+**Biological rationale.** Protein homology identifies candidates based on
+sequence similarity; IsoSeq long reads provide independent transcriptomic
+evidence. A long-read transcript that spans two adjacent gene models — i.e.,
+it overlaps both models without a gap between them — directly confirms that
+the two are co-transcribed as a single pre-mRNA. This evidence is
+particularly valuable for candidates flagged `SINGLE_HIT` where protein
+evidence is thin.
+
+**What happens.** For each candidate locus, Mender counts IsoSeq
+transcripts that overlap all genes in the chain (using the overlap table
+from step 3). A transcript qualifies as *spanning* if it overlaps every
+gene in the locus, not just one or two of them. Three outcomes are
+possible:
+
+- **FULL_SPAN** — at least one transcript spans all genes in the locus.
+  Strong confirmation; merge is well-supported.
+- **PARTIAL_SPAN** — reads are present and span some genes in the chain
+  but none reach a terminal fragment. The terminal fragment may be a
+  neighbouring gene that was incorrectly chained; `fix_partial = yes`
+  will trim it before merging.
+- **NO_SPANNERS** — no spanning reads found. Importantly, absence of spanning
+  reads does not mean the merge is wrong. IsoSeq libraries are typically
+  generated from specific developmental stages or tissue types; a gene that
+  is not expressed in those conditions will have no reads regardless of its
+  structure. The key asymmetry: if reads are long enough to span two genes
+  they should also reach a third if all three are truly one transcriptional
+  unit — which is why `PARTIAL_SPAN` is informative even with incomplete
+  libraries, but `none` is not.
+
+**Inputs:** `merge_candidates.txt` (step 4), `overlaps.txt` (step 3)  
+**Outputs:** `isoseq_validated.txt` — merge table with IsoSeq status column added
+
+---
+
+### Step 6 — Merge
+
+**Biological rationale.** Once candidates have been scored by protein
+evidence (step 4) and optionally validated by IsoSeq (step 5), those that
+pass the merge filters (see table above) — the surviving candidates — are
+used to restructure the genome annotation. "Surviving" means they were not
+excluded by `skip_flags`, met any minimum `min_tiling` or `min_cov`
+thresholds, and satisfied any `require_isoseq` constraint set in the
+config. The source gene models (the split fragments) are removed and
+replaced by a single merged gene model whose exon/CDS/UTR structure is the
+ordered union of all fragments in the locus.
+
+**What happens.** Candidates are first filtered using the parameters in the
+`[merge_filters]` config section (see table above). For `PARTIAL_SPAN`
+candidates, if `fix_partial = yes`, the unsupported terminal fragment is
+dropped before merging. The source genes are written to
+`removed_genes.gff`, then the merged gene is constructed by collecting all
+child features (exon, CDS, UTR) from every source model, sorting them by
+genomic coordinate, and recalculating CDS phase from scratch. New unique
+IDs are assigned using the `gene_template` and `trans_template` patterns;
+every merged gene is tagged `source=Mender` in the GFF attributes field so
+it can be distinguished from original annotation features.
+
+*Example:* Fragments GeneA (exons on chr1:1000–1200, 1400–1600) and GeneB
+(exons on chr1:2000–2200, 2400–2600) are merged. The resulting gene has
+four exons spanning chr1:1000–2600, with CDS phase recalculated from
+position 1000.
+
+**Key parameters:** all `[merge_filters]` parameters, `gene_template`, `trans_template`  
+**Inputs:** validated/merge table (step 4 or 5), GFF  
+**Outputs:** `new_merges.gff` (full annotation with merges), `removed_genes.gff`
+
+---
+
+### Step 7 — GT GFF3 check
+
+**Why this step exists.** Merging exon/CDS features from multiple gene
+models is a complex structural operation. Step 7 is a transparency check:
+it tells you whether the merge introduced any GFF3 format problems before
+you commit the annotation to downstream analysis. It does not change any
+files or flag any genes — all decisions rest with the user.
+
+**What happens.** First, a gene count sanity check is run: the number of
+genes in the input annotation, the merged output, and `removed_genes.gff`
+are counted and verified against the expected value (input − removed +
+merged). A mismatch here means genes were silently dropped or duplicated
+during the merge and should be investigated before proceeding.
+
+If `run_gt = yes`, `gt gff3validator` (GenomeTools) is then run on a
+temporary GFF containing only the `source=Mender` features extracted from
+the merged annotation. Isolating Mender-created features means pre-existing
+GFF3 errors in the input annotation will not appear in the report.
+
+**Errors are printed to the terminal and the pipeline continues regardless
+of the outcome.** No genes are flagged and no files are modified. The user
+must read the output and decide whether any errors warrant manual
+intervention before proceeding to steps 8 and 9.
+
+Common merge-introduced errors to watch for, and suggested actions:
+
+- **Exon/CDS coordinates extend beyond parent mRNA.** Locate the gene ID
+  in the merged GFF and inspect the coordinates manually or in a genome
+  browser. To determine whether the error was introduced by the merge or
+  was present in the original annotation, run AGAT on `removed_genes.gff`
+  (the original source fragments, written in step 6). If the same error
+  appears there, it is pre-existing. If it only appears post-merge, remove
+  the offending rows from `isoseq_validated.txt` (or `merge_candidates.txt`
+  if step 5 was skipped) and re-run step 6.
+
+- **Incorrect or missing CDS phase.** Apply the same diagnostic: run AGAT
+  on `removed_genes.gff` to distinguish pre-existing phase errors from
+  merge-introduced ones. merge_split_genes.pl recalculates phase from
+  scratch, so newly introduced errors typically point to an unusual input
+  structure. Re-running step 6 with `--flags STRONG` restricts merging to
+  high-confidence candidates and reduces exposure to structurally complex
+  edge cases.
+
+- **Duplicate feature IDs.** Check that `gene_template` and
+  `trans_template` in the config produce IDs that do not overlap with the
+  existing annotation namespace. Adjust the templates and re-run step 6.
+
+**Inputs:** `new_merges.gff` (step 6)  
+**Outputs:** gene count summary and GT validation messages printed to terminal; no files written
+
+---
+
+### Step 8 — Translation validation  *(conditional)*
+
+**Biological rationale.** A merged gene model is structurally plausible if
+its exon/CDS coordinates are internally consistent, but the ultimate test
+is whether the predicted protein product makes biological sense. If a merge
+joins two genomic regions that are not part of the same reading frame —
+for example, because a short intervening gene was mistakenly included in
+the chain, or because one fragment is on the wrong strand — the merged CDS
+will contain internal stop codons or fail to align well to its reference
+ortholog.
+
+Translation validation provides a per-merge quality assessment with three
+outcomes: PASS, REVIEW, or FAIL. Only PASS (and optionally REVIEW) merges
+are carried forward to downstream use.
+
+**What happens.** The merged CDS sequences are translated using `gffread`
+and the resulting protein sequences are searched against the reference
+proteome with DIAMOND. Each merge is also subjected to a multiple-sequence
+alignment (MSA) using `mafft` or `kalign`. The alignment contains the
+merged protein, the individual source fragment proteins, and up to three
+reference proteome hits (preferring SwissProt manually-curated sequences
+when available). The position of each gene-fragment junction within the
+merged protein is calculated precisely: it is the cumulative CDS length of
+all source genes up to that point divided by 3 (converting bp to amino
+acids). That position is then mapped to the corresponding column in the
+alignment.
+
+The junction is scored by examining a ±5 amino acid window of alignment
+columns centred on that column. Three sub-scores are computed and combined
+as a weighted sum (total = 0–1; default PASS threshold = 0.5). The weights
+must sum to exactly 1.0 (enforced at runtime) and are configurable via
+`--w_conservation`, `--w_continuity`, and `--w_gap`. The defaults were
+chosen because conservation and ref continuity are considered equally
+important signals of a structurally sound junction, while gap pattern —
+though informative — is treated as a supporting rather than primary
+criterion:
+
+- **Conservation** (weight 0.4) — at each column in the window, the
+  fraction of non-gap characters that match the most common residue,
+  averaged across the window. A high score means all sequences — merged,
+  source fragments, and references — agree on similar residues at the
+  junction region. A bad merge shows up as disagreement: the residues
+  flanking the junction in the merged protein are inconsistent with what
+  the source fragments and references show at that position.
+
+- **Ref continuity** (weight 0.4) — the fraction of reference proteins
+  that are completely gap-free across the junction (±3 aa). A high score
+  means references flow through the junction without gaps, expected when
+  the junction falls in a conserved, structurally coherent region. A low
+  score means references also gap out at that position, which may indicate
+  a naturally variable region rather than a merge-induced break.
+
+- **Gap pattern** (weight 0.2) — penalises columns where the merged
+  protein has a gap but the reference sequences do not. This catches cases
+  where the two fragments do not join cleanly at the protein level: the
+  merged sequence must introduce gaps to align, revealing a discontinuity
+  at the junction that is absent from the references.
+
+For multi-fragment merges (A→B→C) each junction is scored independently;
+the minimum score across all junctions determines the overall
+PASS/REVIEW/FAIL classification. FAIL merges are replaced by their
+original source genes in the validated output GFF.
+
+**Key parameters:** `run_translation_validation`, `genome_fa`, `kalign_bin` / `mafft_bin`  
+**Inputs:** `new_merges.gff` (step 6), genome FASTA, reference proteome  
+**Outputs:** `transl_pass.gff3`, `transl_review.gff3`, `transl_fail.gff3`, `new_merges_validated.gff`
+
+---
+
+### Step 9 — AGAT gene-model check  *(conditional)*
+
+**Biological rationale.** AGAT (Another Gff Analysis Toolkit) is a
+specialist GFF3 parser that enforces strict gene-model coherence rules: CDS
+features must be enclosed by their parent exon, parent–child ID
+relationships must be consistent, and there must be no orphan features
+lacking a parent. These rules go beyond what `gt gff3validator` checks and
+are particularly relevant after merging because the merge operation
+assembles child features from multiple source models that may have
+originally had different ID namespaces or slightly inconsistent feature
+boundaries.
+
+**What happens.** AGAT is run on the final output GFF — the translation-
+validated PASS GFF if step 8 ran, or the full merged annotation if step 8
+was skipped. The corrected GFF that AGAT produces is saved alongside the
+input with `_agat` appended to the filename (e.g. `transl_pass_agat.gff3`
+or `new_merges_agat.gff`). Stderr and stdout are combined, filtered for
+lines containing "error" or "warn" (case-insensitive), and the first 20
+lines are printed to the terminal. This step is purely informational — it
+surfaces gene-model coherence problems for manual review but does not
+modify any other pipeline files.
+
+**Key parameters:** `run_agat`  
+**Inputs:** `transl_pass.gff3` (or `new_merges.gff` if step 8 skipped)  
+**Outputs:** `transl_pass_agat.gff3` (or `new_merges_agat.gff`); first 20 error/warning lines printed to terminal
+
+---
+
+### Outputs
+
+The primary deliverable is `new_merges_validated.gff` — the input
+annotation with split gene fragments removed and replaced by merged,
+translation-validated gene models. When step 8 is skipped, `new_merges.gff`
+serves the same role.
+
+`removed_genes.gff` records every source gene model that was deleted during
+merging. This file is important for provenance: if a merge is later
+determined to be incorrect it can be reversed by removing the merged gene
+and restoring the source features from this file.
+
+The three translation validation files (`transl_pass.gff3`,
+`transl_review.gff3`, `transl_fail.gff3`) allow independent examination of
+each quality tier. REVIEW merges in particular are worth manual inspection:
+they translate well but their junction MSA score is borderline, often
+because the fragment boundary happens to fall in a low-complexity or
+gapped region of the alignment.
+

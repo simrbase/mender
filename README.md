@@ -495,7 +495,7 @@ Same as above plus:
 ```
 18:spanning_isoseq_count  number of IsoSeq reads spanning 2+ genes
 19:spanning_isoseq_detail per-read detail: read_id(Nof M):gene1+gene2+...
-20:isoseq_flag            FULL_SPAN | PARTIAL_SPAN | none
+20:isoseq_flag            FULL_SPAN | PARTIAL_SPAN | NO_SPANNERS
 ```
 
 ---
@@ -530,7 +530,7 @@ Same as above plus:
 |------|---------|
 | `FULL_SPAN` | At least one read spans all genes — strong confirmation |
 | `PARTIAL_SPAN` | Reads exist but none reach a terminal gene — structural signal that a terminal gene may not belong. Use `--fix_partial` to auto-trim. |
-| `none` | No spanning reads found — may reflect expression stage, not gene structure. Not a negative result. |
+| `NO_SPANNERS` | No spanning reads found — may reflect expression stage, not gene structure. Not a negative result. |
 
 ---
 
