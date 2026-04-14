@@ -384,9 +384,13 @@ coverages — a 5 aa gap between the two alignments is included in the span
 and slightly inflates the percentage, but for typical gaps this is
 negligible. The fragments must tile the reference within a configurable
 `wiggle` tolerance (default ±15 aa, measured in reference protein
-coordinates). A positive tiling gap means the alignments don't quite meet;
-a negative gap means they overlap slightly; both are acceptable within
-tolerance. If the test passes, the pair is a split-gene candidate.
+coordinates; set via `wiggle` in config). A positive tiling gap means the
+alignments don't quite meet; a negative gap means they overlap slightly;
+both are acceptable within tolerance. The maximum number of gene positions
+separating the two candidates is controlled by `max_dist` (default 4,
+configurable). Values above 4 substantially increase the number of
+`SKIPPED_GENE` candidates and run time. If the test passes, the pair is a
+split-gene candidate.
 
 *Example:* Reference protein = 500 aa. Gene A aligns to positions 10–200;
 gene B aligns to positions 205–480. Combined span = 480 − 10 + 1 = 471 aa.

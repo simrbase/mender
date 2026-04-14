@@ -476,23 +476,30 @@ use Getopt::Long qw(GetOptions);
 my $no_asym_trim       = 0;
 my $large_span_warn    = 500000;   # bp: flag LARGE_SPAN above this
 my $large_span_extreme = 2000000;  # bp: flag LARGE_SPAN_EXTREME above this
+my $wiggle         = 15;  # aa wiggle room for tiling junction
+my $max_dist       =  4;  # max genomic rank distance between gene pair
+my $asym_threshold =  6;  # min hits on strong side to trigger trim/split
+my $low_cov_thresh = 60;  # combined_cov_pct below this gets LOW_COV flag
 
 GetOptions(
     "no_asym_trim"         => \$no_asym_trim,
     "large_span_warn=i"    => \$large_span_warn,
     "large_span_extreme=i" => \$large_span_extreme,
-) or die "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] blast gff subject_fa query_fa\n";
+    "max_dist=i"           => \$max_dist,
+    "wiggle=i"             => \$wiggle,
+    "asym_threshold=i"     => \$asym_threshold,
+    "low_cov_thresh=f"     => \$low_cov_thresh,
+) or die "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] " .
+         "[--max_dist N] [--wiggle N] [--asym_threshold N] [--low_cov_thresh N] " .
+         "blast gff subject_fa query_fa\n";
 
-my $usage_str = "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] blast gff subject_fa query_fa\n";
+my $usage_str = "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] " .
+                "[--max_dist N] [--wiggle N] [--asym_threshold N] [--low_cov_thresh N] " .
+                "blast gff subject_fa query_fa\n";
 my $blast      = shift or die $usage_str;
 my $gff        = shift or die $usage_str;
 my $subject_fa = shift or die $usage_str;
 my $query_fa   = shift or die $usage_str;
-
-my $wiggle         = 15;  # aa wiggle room for tiling junction
-my $max_dist       =  4;  # max genomic rank distance between gene pair
-my $asym_threshold =  6;  # min hits on strong side to trigger trim/split
-my $low_cov_thresh = 60;  # combined_cov_pct below this gets LOW_COV flag
 my $strong_thresh  =  3;  # min junction hits for STRONG flag
 my $frag_scov_max  = 85;  # scovhsp <= this is always a fragment candidate
 my $frag_qcov_min  = 90;  # qcovhsp >= this enables the soft scovhsp extension

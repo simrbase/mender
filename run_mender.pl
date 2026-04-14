@@ -121,6 +121,10 @@ my $isoseq_min_span    = cfg("merge_filters", "isoseq_min_spanning","0");
 my $asym_trim          = cfg("merge_filters", "asym_trim",          "yes");
 my $large_span_warn    = cfg("merge_filters", "large_span_warn",    "500000");
 my $large_span_hard    = cfg("merge_filters", "large_span_hard",    "2000000");
+my $max_dist           = cfg("merge_filters", "max_dist",           "4");
+my $wiggle             = cfg("merge_filters", "wiggle",             "15");
+my $asym_threshold     = cfg("merge_filters", "asym_threshold",     "6");
+my $low_cov_thresh     = cfg("merge_filters", "low_cov_thresh",     "60");
 
 # validation (gt + agat)
 my $run_gt    = cfg("validation", "run_gt",   "yes");
@@ -444,6 +448,10 @@ if ($run_steps{4}) {
         ($asym_trim =~ /^no$/i ? "--no_asym_trim " : "") .
         ($large_span_warn  ? "--large_span_warn $large_span_warn "       : "") .
         ($large_span_hard  ? "--large_span_extreme $large_span_hard "    : "") .
+        ($max_dist         ? "--max_dist $max_dist "                      : "") .
+        ($wiggle           ? "--wiggle $wiggle "                          : "") .
+        ($asym_threshold   ? "--asym_threshold $asym_threshold "         : "") .
+        ($low_cov_thresh   ? "--low_cov_thresh $low_cov_thresh "         : "") .
         "$diamond_out " .
         "$gff " .
         "$subject_fa " .
@@ -875,6 +883,10 @@ if ($run_steps{9}) {
     $r->("  large_span_warn:            ${large_span_warn} bp");
     $r->("  large_span_hard:            ${large_span_hard} bp");
     $r->("  asym_trim:                  " . cfg("merge_filters", "asym_trim", "yes"));
+    $r->("  max_dist:                   ${max_dist}");
+    $r->("  wiggle:                     ${wiggle} aa");
+    $r->("  asym_threshold:             ${asym_threshold}");
+    $r->("  low_cov_thresh:             ${low_cov_thresh}%");
     $r->("");
     $r->("[validation]");
     $r->("  run_translation_validation: " . ($run_transl_val =~ /^no$/i ? "no" : "yes"));

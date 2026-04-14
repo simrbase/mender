@@ -131,6 +131,7 @@ evalue = 1e-20
 
 ## ============================================================
 [ids]
+
 ##
 ## New gene and transcript ID templates using bracket notation.
 ## [GCOUNT:N]  gene counter, zero-padded to N digits
@@ -265,6 +266,44 @@ isoseq_min_spanning = 0
 ##   - You want to see what would be trimmed before deciding to discard it.
 ##   - You are comparing two runs to evaluate the effect of trimming.
 asym_trim = yes
+
+## max_dist: maximum number of gene rank positions between two candidate
+## fragments for them to be considered a tiling pair. Nested genes are
+## excluded from the rank before this is evaluated, so max_dist counts
+## only real intervening genes (see SKIPPED_GENE flag).
+## Increase for gene-sparse assemblies (highly fragmented or repeat-rich
+## genomes where split fragments may be further apart); decrease to reduce
+## false positives in very gene-dense regions. Values above 4 substantially
+## increase the number of SKIPPED_GENE candidates and run time.
+## Default: 4
+max_dist = 4
+
+## wiggle: maximum allowed gap or overlap between the two fragment alignments,
+## measured in amino acids on the reference protein. A positive value means a
+## gap between the two HSPs (they don't quite meet); a negative value means they
+## overlap slightly. Both are expected from normal HSP boundary fuzziness.
+## Increase for distant reference proteomes where alignment ends are less sharp;
+## decrease if you are seeing spurious pairs where the two alignments don't
+## cleanly partition the reference.
+## Default: 15
+wiggle = 15
+
+## asym_threshold: minimum tiling-hit count on the strong side of a chain
+## junction needed to trigger asymmetric trimming of a weak terminal gene.
+## A junction is trimmed when it has exactly 1 tiling hit AND another junction
+## in the same chain has >= asym_threshold hits. Raise this value when your
+## reference proteome is small or phylogenetically distant, so that low hit
+## counts are expected even for real junctions. Only applies when asym_trim = yes.
+## Default: 6
+asym_threshold = 6
+
+## low_cov_thresh: combined_cov_pct (the fraction of the reference protein
+## spanned by the two fragments together) below which the LOW_COV flag is
+## assigned. Pairs with very low combined coverage are more likely to reflect
+## domain sharing than a genuine split gene. This controls the flag only —
+## candidates are not removed unless LOW_COV is in skip_flags.
+## Default: 60 (percent)
+low_cov_thresh = 60
 
 ## ============================================================
 [validation]
