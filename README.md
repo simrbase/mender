@@ -9,17 +9,21 @@ Evidence comes from two independent sources:
 1. **Diamond blastp** homology against a reference proteome (protein tiling)
 2. **PacBio IsoSeq** long reads that span two or more split fragments (optional but recommended)
 
-New merged genes are tagged with `source=Mender` and `merge_source=Mender` in
-the output GFF so they are easy to identify downstream.
+New merged genes are tagged with `source=Mender` in the output GFF and carry
+a `merged_from` attribute listing the source gene IDs.
+
+For an annotated pipeline diagram with per-step descriptions, see
+[pipeline_overview.md](pipeline_overview.md).
 
 ---
 
 ## How the Protein Homology Analysis Works
 
-The core idea: if two adjacent genes in the genome each cover
-a non-overlapping portion of the same reference protein, they are likely
-two halves of a single gene that was erroneously split during automated
-annotation.
+Two adjacent gene models are a split-gene candidate when their protein
+products together tile a single reference ortholog end-to-end — each
+covering a non-overlapping portion of it. The sections below describe how
+that determination is made. These all happen inside pipeline step 4
+(`find_split_genes.pl`).
 
 ### What is a "pair"?
 
@@ -33,7 +37,7 @@ within the coordinates of another gene) are excluded from the rank when
 calculating distances, since they would artificially inflate the apparent
 distance between flanking genes.
 
-### Step 1 — Fragment detection
+### Fragment detection
 
 Each gene model in the query annotation has a translated protein sequence.
 These proteins are searched against a well-annotated reference proteome using
@@ -53,7 +57,7 @@ Two conditions are tested — either is sufficient:
 Proteins that pass neither condition are treated as complete homologs and
 excluded from split gene analysis.
 
-### Step 2 — Tiling test
+### Tiling test
 
 For each pair of adjacent genes, Mender checks whether their diamond
 alignments tile end-to-end on a shared reference protein. The key requirement
@@ -140,7 +144,7 @@ protein family with a common motif) rather than being a genuine split gene.
 The threshold is configurable in the config file (`merge_filters` section) or
 via `--min_cov` when running `merge_split_genes.pl` manually.
 
-### Step 3 — Confidence from multiple reference proteins
+### Confidence from multiple reference proteins
 
 A key confidence measure is **`num_tiling_hits`**: how many *different*
 reference proteins independently support the same pair as tiling fragments.
@@ -179,7 +183,7 @@ are the primary way to catch these cases.
 | 5+ | Strong — split boundary is conserved across many reference proteins |
 | 10+ | Very strong |
 
-### Step 4 — Chaining into multi-gene groups
+### Chaining into multi-gene groups
 
 Adjacent pairs that share a gene are chained together. For example, if gene
 A–gene B passes the tiling test and gene B–gene C also passes, they become a
@@ -203,7 +207,7 @@ the chain), the candidate receives a `SKIPPED_GENE` flag. That skipped gene
 may be another split fragment that failed the filters, or an unrelated gene —
 it is worth checking before merging.
 
-### Step 5 — Quality flags
+### Quality flags
 
 Every merge candidate receives one or more quality flags summarizing the
 protein evidence. Multiple flags are comma-separated in the `flag` column.
@@ -233,13 +237,6 @@ The recommended starting point is to merge `STRONG` and `CLEAN` candidates
 while skipping `SKIPPED_GENE` and `LOW_COV`. These defaults are set in
 `mender.cfg.example` and can be adjusted in the `[merge_filters]` section of
 the config, or via command line options to `merge_split_genes.pl`.
-
-**Liberal run strategy:** set `skip_flags = LOW_COV` to pass nearly all
-candidates through the merger, then use a downstream translation validation
-step (translate merged CDS, BLAST against reference, check for internal stop
-codons and low identity) as the primary quality gate. Flags become diagnostic
-metadata explaining *why* a merged gene failed translation, rather than
-pre-merge filters.
 
 ---
 
@@ -300,31 +297,26 @@ canonical sequence per gene give more comparable hit counts across gene
 families but reduce total sensitivity. Choose based on whether you prioritize
 comparability (filtered) or maximum sensitivity (all isoforms).
 
-### Multi-proteome strategy
+### Finding a reference for your organism
 
-Running Mender against two independent reference proteomes and taking the
-intersection of supported merge candidates provides substantially stronger
-evidence than a single reference run:
+RefSeq and Ensembl are the primary sources for curated proteomes across most
+taxa. Both provide BUSCO completeness scores for their annotated assemblies,
+which is the most direct way to compare candidates: a proteome with a high
+BUSCO vertebrata (or metazoa, or embryophyta, depending on your clade) score
+is more complete and will produce more tiling hits than a lower-scoring one.
 
-- Pairs supported by **both** references are the most reliable.
-- Pairs supported by only one reference warrant closer inspection — the
-  single-proteome hit may reflect an annotation artifact in that reference
-  rather than genuine split-gene evidence.
+Search NCBI Datasets or Ensembl for annotated assemblies in the same order or
+class as your target organism. Download the protein FASTA for the best-scoring
+candidate. If no closely related species has a high-quality annotation, a more
+distant but well-annotated relative is preferable to a close but poorly
+annotated one — a fragmented or error-prone reference proteome will introduce
+false split-gene candidates and suppress real ones.
 
-To implement this, run Steps 1–4 twice (once per reference proteome), then
-compare the two `merge_candidates.txt` outputs by gene pair. A lightweight
-post-processing script can produce a `consensus_merge_candidates.txt` with a
-`proteome_support = N/M` column indicating how many references supported each
-pair.
-
-### Suggested references by taxon
-
-| Taxon | Suggested references |
-|---|---|
-| Squamates (lizards, snakes) | *Anolis carolinensis* (RefSeq/Ensembl), *Pogona vitticeps* (Ensembl) |
-| Mammals | Human GRCh38 (RefSeq), mouse GRCm39 (RefSeq) |
-| Birds | Chicken GRCg7b (RefSeq), zebra finch |
-| Fish | Zebrafish GRCz11 (RefSeq), medaka |
+For organisms with no well-annotated relative at all (early-diverging lineages,
+poorly studied phyla), a broad-coverage reference such as a curated set of
+orthologs from OrthoDB or a UniProt/SwissProt subset filtered to your clade
+can serve as a fallback, with the understanding that `num_tiling_hits` will be
+lower throughout.
 
 ---
 
@@ -391,7 +383,7 @@ to control the scope of step 8 from the config.
 | I | Load merge table for flag annotations |
 | J | MSA junction scoring — align merged + source + SwissProt ref (+ best ref_fa hit) proteins; score each junction. Aligner set via `aligner` config (kalign3 recommended). |
 | K | Assign PASS / FAIL / REVIEW per merge; write `transl_result`, `msa_flag`, `min_junction_score` into GFF attributes |
-| L | Write outputs: `_report.tsv`, `_pass.gff3`, `_fail.gff3`, `_review.gff3`, `_pass_proteins.fa` |
+| L | Write outputs into `--out` directory: `report.tsv`, `pass.gff3`, `fail.gff3`, `review.gff3`, `pass_proteins.fa` |
 
 ---
 
@@ -450,16 +442,21 @@ perl merge_split_genes.pl \
     isoseq_validated.txt input.gff output.gff
 ```
 
-**Output files:**
-- `output.gff` — complete merged annotation; all Mender genes have `source=Mender` and carry `transl_result`, `msa_flag`, `min_junction_score` attributes after step 8
-- `output_validated.gff` — **recommended for downstream use**; FAIL merges replaced with source genes, REVIEW merges retained by default (controlled by `final_gff_include_review`)
-- `removed_genes.gff` — source genes removed during merge (audit trail; used to restore genes in validated GFF)
+**Output files (standalone use):**
+- `output.gff` — complete merged annotation; all Mender genes tagged with `source=Mender`
+- `removed_genes.gff` — source genes removed during merge (audit trail)
 - `output.log` — merge ID → new gene ID mapping and run parameters
-- `output_run_report.txt` — full run report: all parameters, step status, result counts, output file inventory
+
+When run via `run_mender.pl`, the merge outputs land in `results/<prefix>/`:
+- `merges.gff` — complete merged annotation
+- `removed.gff` — source genes removed
+- `validated.gff` — **recommended for downstream use**; FAIL merges (and optionally REVIEW) replaced with their original source genes; retained Mender genes carry `transl_result`, `msa_flag`, `min_junction_score` GFF attributes (added by step 8)
+- `run_report.txt` — full run report: all parameters, step status, result counts, output file inventory
 
 ### `split_gene_report_checks.sh`
-Bash utility with useful queries on all four output files. Run after step 4/5
-to explore candidates before merging.
+Bash utility with prebuilt queries for the candidate and merge table outputs
+(steps 4–5) and for the translation validation report (step 8). Run from the
+directory containing the files you want to inspect.
 
 ```bash
 bash split_gene_report_checks.sh
@@ -491,11 +488,35 @@ bash split_gene_report_checks.sh
 ```
 
 ### `isoseq_validated.txt` (20 columns)
-Same as above plus:
+Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
 ```
 18:spanning_isoseq_count  number of IsoSeq reads spanning 2+ genes
 19:spanning_isoseq_detail per-read detail: read_id(Nof M):gene1+gene2+...
 20:isoseq_flag            FULL_SPAN | PARTIAL_SPAN | NO_SPANNERS
+```
+
+### `report.tsv` (20 columns, step 8 output)
+```
+1:merge_id              merge group identifier (from merge table)
+2:new_gene_id           Mender gene ID in the merged GFF
+3:source_genes          comma-sep source gene IDs
+4:merged_protein_len    length of representative merged protein (aa)
+5:has_internal_stop     1 if merged protein contains internal stop codon(s)
+6:internal_stop_pos     comma-sep positions of internal stops, or "."
+7:merged_cov_by_ref     fraction of merged protein covered by best diamond hit
+8:ref_cov_by_merged     fraction of reference protein covered by merged protein
+9:best_ref_hit          reference protein ID with highest bitscore
+10:best_ref_pident      % identity to best_ref_hit
+11:ref_len              length of best_ref_hit (aa)
+12:n_ref_hits           number of distinct reference hits found
+13:junction_scores      pipe-sep per-junction MSA scores (one per source-gene junction)
+14:min_junction_score   lowest per-junction score across all junctions
+15:mean_junction_score  mean per-junction score
+16:msa_flag             GOOD_MSA | GOOD_MSA_LOW_REF | WEAK_JUNCTION | NO_HIT | SKIPPED
+17:translation_flag     OK | FRAMESHIFT_DETECTED
+18:source_flags         flag column from the merge table (step 4/5)
+19:fail_reasons         pipe-sep reasons for FAIL, or "."
+20:overall_result       PASS | FAIL | REVIEW
 ```
 
 ---
@@ -525,12 +546,47 @@ Same as above plus:
 | `LARGE_SPAN` | Merged locus genomic span exceeds `large_span_warn` (default 500 kb). Review with IsoSeq for weak-evidence merges. |
 | `LARGE_SPAN_EXTREME` | Merged locus span exceeds `large_span_extreme` (default 2 Mb). Recommend adding to `skip_flags` unless IsoSeq confirms. |
 
-### IsoSeq flags (column 20)
+### IsoSeq flags (column 20 of `isoseq_validated.txt`)
 | Flag | Meaning |
 |------|---------|
 | `FULL_SPAN` | At least one read spans all genes — strong confirmation |
 | `PARTIAL_SPAN` | Reads exist but none reach a terminal gene — structural signal that a terminal gene may not belong. Use `--fix_partial` to auto-trim. |
 | `NO_SPANNERS` | No spanning reads found — may reflect expression stage, not gene structure. Not a negative result. |
+
+### Translation validation flags (`report.tsv` columns 16–17, 19–20)
+
+**`translation_flag` (column 17):**
+
+| Value | Meaning |
+|-------|---------|
+| `OK` | No internal stop codons in the merged CDS translation |
+| `FRAMESHIFT_DETECTED` | Internal stop codon(s) found — see `internal_stop_pos` for positions |
+
+**`msa_flag` (column 16):**
+
+| Value | Meaning |
+|-------|---------|
+| `GOOD_MSA` | Min junction MSA score ≥ threshold; no internal stop |
+| `GOOD_MSA_LOW_REF` | Same as `GOOD_MSA` but fewer than `min_msa_refs` reference sequences were available — score is less reliable |
+| `WEAK_JUNCTION` | Min junction score below threshold, or aligner failed |
+| `NO_HIT` | No diamond hit found for the merged protein |
+| `SKIPPED` | MSA was skipped (`--no_msa`) |
+
+**`fail_reasons` (column 19):**
+
+| Value | Meaning |
+|-------|---------|
+| `INTERNAL_STOP` | Merged CDS has an internal stop codon |
+| `LOW_MERGED_COV` | Merged protein covers less than `min_merged_cov` of its best reference hit |
+| `NO_HIT` | No reference hit found for the merged protein |
+
+**`overall_result` (column 20):**
+
+| Value | Meaning |
+|-------|---------|
+| `PASS` | Clean translation, coverage thresholds met, junction MSA score above threshold |
+| `FAIL` | At least one fail reason; merged gene should not be used without review |
+| `REVIEW` | No hard fail criteria but PASS criteria not fully met — inspect before use |
 
 ---
 

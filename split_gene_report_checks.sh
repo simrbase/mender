@@ -96,7 +96,7 @@ sort -t$'\t' -k10 -rn split_genes_summary.txt | \
 
 echo ""
 echo "============================================================"
-echo "SPLIT_GENES_MERGE.TXT"
+echo "MERGE_CANDIDATES.TXT"
 echo "One row per merge candidate. Pairs sharing a gene are chained."
 echo "Trimming and splitting applied based on junction asymmetry."
 echo "============================================================"
@@ -354,7 +354,7 @@ echo "  grep GENENAME isoseq_validated.txt   | cut -f1,2,3,8,15,17,18,20"
 echo ""
 echo "--- Trace a merge through all files ---"
 echo "  grep ^merge_NNN  isoseq_validated.txt | cut -f1,2,3,8,15,17,18,20"
-echo "  grep merge_id=merge_NNN new_merges.gff | cut -f1,3,4,5,9"
+echo "  grep merge_id=merge_NNN merges.gff | cut -f1,3,4,5,9"
 echo "  grep ^merge_NNN  new_merges.log"
 
 echo ""
@@ -376,8 +376,8 @@ echo "  grep SKIPPED_TRANSCRIPT_ID diamond.out | head -5"
 echo ""
 echo "--- Sanity check merged GFF gene counts ---"
 echo "  grep -c \$'\\tgene\\t' original.gff     # before"
-echo "  grep -c \$'\\tgene\\t' new_merges.gff    # after"
-echo "  grep -c \$'\\tgene\\t' removed_genes.gff # removed"
+echo "  grep -c \$'\\tgene\\t' merges.gff         # after"
+echo "  grep -c \$'\\tgene\\t' removed.gff       # removed"
 echo "  # after = before - removed + merged_count"
 
 echo ""
@@ -406,3 +406,106 @@ echo "  awk -F'\t' 'NR>1 && \$NF~/WEAK_END/{c++} END{print c\" WEAK_END\"}' merg
 echo "  awk -F'\t' 'NR>1 && \$NF~/WEAK_END/{c++} END{print c\" WEAK_END\"}' split_genes_merge.NOTRIM.txt"
 echo "  # NOTRIM should have more WEAK_END (chains with trimmed terminals retained)"
 echo "  # TRIM may have more total rows if splitting occurred (each split = +1 row)"
+
+echo ""
+echo "======================================================================"
+echo "TRANSLATION VALIDATION (step 8)"
+echo "Files: report.tsv  pass.gff3  fail.gff3  review.gff3  pass_proteins.fa"
+echo ""
+echo "These files are written to the run directory (results/<prefix>/)."
+echo "If running this script from the work subdirectory, prefix paths with ../"
+echo "or cd to the run directory first."
+echo ""
+echo "Column reference for report.tsv (20 columns):"
+echo "  1:merge_id              2:new_gene_id           3:source_genes"
+echo "  4:merged_protein_len    5:has_internal_stop     6:internal_stop_pos"
+echo "  7:merged_cov_by_ref     8:ref_cov_by_merged     9:best_ref_hit"
+echo "  10:best_ref_pident      11:ref_len              12:n_ref_hits"
+echo "  13:junction_scores      14:min_junction_score   15:mean_junction_score"
+echo "  16:msa_flag             17:translation_flag     18:source_flags"
+echo "  19:fail_reasons         20:overall_result"
+echo "======================================================================"
+
+REPORT="report.tsv"
+
+echo ""
+echo "--- Overall result distribution (PASS / FAIL / REVIEW) ---"
+awk -F'\t' 'NR>1 {print $20}' $REPORT | sort | uniq -c | sort -rn
+
+echo ""
+echo "--- Translation flag distribution ---"
+echo "FRAMESHIFT_DETECTED = internal stop codon in merged CDS"
+echo "OK                  = clean translation"
+awk -F'\t' 'NR>1 {print $17}' $REPORT | sort | uniq -c | sort -rn
+
+echo ""
+echo "--- MSA flag distribution ---"
+echo "GOOD_MSA          = junction scores above threshold, no internal stop"
+echo "GOOD_MSA_LOW_REF  = GOOD_MSA but fewer than min_msa_refs reference sequences in alignment"
+echo "WEAK_JUNCTION     = junction score below threshold or aligner failed"
+echo "NO_HIT            = no diamond hit to reference proteome"
+echo "SKIPPED           = --no_msa was set"
+awk -F'\t' 'NR>1 {print $16}' $REPORT | sort | uniq -c | sort -rn
+
+echo ""
+echo "--- Fail reason distribution ---"
+echo "INTERNAL_STOP   = merged CDS contains internal stop codon(s)"
+echo "LOW_MERGED_COV  = merged protein covers < min_merged_cov of best reference hit"
+echo "NO_HIT          = no diamond hit found for merged protein"
+awk -F'\t' 'NR>1 && $19 != "." {print $19}' $REPORT | tr '|' '\n' | sort | uniq -c | sort -rn
+
+echo ""
+echo "--- FAIL candidates with internal stops ---"
+echo "merge_id | new_gene_id | source_genes | internal_stop_pos | source_flags | fail_reasons"
+awk -F'\t' 'NR>1 && $17=="FRAMESHIFT_DETECTED"' $REPORT | \
+    cut -f1,2,3,6,18,19 | head -20
+
+echo ""
+echo "--- FAIL candidates by fail_reason (low coverage, no hit) ---"
+echo "merge_id | new_gene_id | merged_len | merged_cov_by_ref | ref_cov_by_merged | n_ref_hits | msa_flag | fail_reasons"
+awk -F'\t' 'NR>1 && $20=="FAIL" && $17!="FRAMESHIFT_DETECTED"' $REPORT | \
+    cut -f1,2,4,7,8,12,16,19 | head -20
+
+echo ""
+echo "--- PASS candidates: top 20 by min_junction_score ---"
+echo "merge_id | new_gene_id | merged_len | merged_cov_by_ref | ref_cov_by_merged | min_junc | mean_junc | msa_flag | source_flags"
+awk -F'\t' 'NR>1 && $20=="PASS"' $REPORT | \
+    sort -t$'\t' -k14 -rn | \
+    cut -f1,2,4,7,8,14,15,16,18 | head -20
+
+echo ""
+echo "--- REVIEW candidates — borderline junction scores ---"
+echo "merge_id | new_gene_id | merged_len | min_junc | mean_junc | msa_flag | translation_flag | source_flags"
+awk -F'\t' 'NR>1 && $20=="REVIEW"' $REPORT | \
+    sort -t$'\t' -k14 -rn | \
+    cut -f1,2,4,14,15,16,17,18 | head -20
+
+echo ""
+echo "--- Candidates with GOOD_MSA_LOW_REF (junction scored with sparse reference coverage) ---"
+echo "merge_id | new_gene_id | n_ref_hits | min_junc | overall_result"
+awk -F'\t' 'NR>1 && $16=="GOOD_MSA_LOW_REF"' $REPORT | \
+    cut -f1,2,12,14,20 | head -20
+
+echo ""
+echo "--- Source flag vs overall_result breakdown ---"
+echo "Shows how protein-evidence flags from step 4/5 predict translation outcome"
+awk -F'\t' 'NR>1 {print $18"\t"$20}' $REPORT | \
+    sort | uniq -c | sort -rn | head -30
+
+echo ""
+echo "--- Gene count summary for translation validation GFFs ---"
+echo "  (run from the directory containing pass.gff3, fail.gff3, review.gff3)"
+echo "  grep -c \$'\\tgene\\t' pass.gff3"
+echo "  grep -c \$'\\tgene\\t' fail.gff3"
+echo "  grep -c \$'\\tgene\\t' review.gff3"
+
+echo ""
+echo "--- Lookup a specific merge in report.tsv ---"
+echo "  awk -F'\t' '\$1==\"merge_NNN\"' report.tsv"
+echo "  awk -F'\t' '\$2==\"CCA3gXXXXXX\"' report.tsv"
+
+echo ""
+echo "--- Find a gene in the translation GFFs ---"
+echo "  grep CCA3gXXXXXX pass.gff3"
+echo "  grep CCA3gXXXXXX fail.gff3"
+echo "  grep CCA3gXXXXXX review.gff3"

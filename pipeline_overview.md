@@ -141,13 +141,14 @@ Box style legend:
 ╔══════════════════════════════════════════════════════════════╗
 ║  OUTPUTS                                                     ║
 ║                                                              ║
-║  new_merges.gff              full merged annotation          ║
-║  removed_genes.gff           source genes removed            ║
-║  transl_pass.gff3            translation-validated PASS      ║
-║  transl_fail.gff3            FAIL merges  (for inspection)   ║
-║  transl_review.gff3          borderline merges               ║
-║  new_merges_validated.gff    recommended for downstream use; ║
+║  merges.gff                  full merged annotation          ║
+║  removed.gff                 source genes removed            ║
+║  pass.gff3                   translation-validated PASS      ║
+║  fail.gff3                   FAIL merges  (for inspection)   ║
+║  review.gff3                 borderline merges               ║
+║  validated.gff               recommended for downstream use; ║
 ║                              FAIL merges restored to source  ║
+║  report.tsv                  per-merge validation metrics    ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
@@ -252,7 +253,7 @@ misleading alignments if the query FASTA contains sequences with internal
 stop codons (`*`) or dots (`.`). These characters appear in translated
 genome annotations when the underlying CDS has a frame-shift, a sequencing
 gap, or an annotation error. A truly split gene model would be expected to
-translate cleanly — it is just truncated relative to its ortholog. Keeping
+translate cleanly — it is truncated relative to its ortholog. Keeping
 corrupted sequences would waste alignment time and could generate spurious
 low-coverage hits that mimic real split-gene signal.
 
@@ -282,8 +283,8 @@ is the canonical split-gene signature. Conversely, a single well-annotated
 gene should align across most of its ortholog's length.
 
 DIAMOND blastp is used because it is orders of magnitude faster than
-BLAST for large proteomes while producing essentially identical
-sensitivity for this type of whole-proteome vs whole-proteome search.
+BLAST for large proteomes while producing comparable sensitivity for
+this type of whole-proteome vs whole-proteome search.
 
 **What happens.** A DIAMOND database is built from the reference proteome.
 The cleaned query proteome (step 1 output) is searched against it using
@@ -444,7 +445,7 @@ number of distinct reference proteins that independently support the pair
 in this way is `num_tiling_hits`. High counts (5+) arise when the split
 boundary falls at a structurally conserved position shared across a protein
 family. Low counts (1–2) are common for single-copy genes and do not mean
-false positive — they simply reflect limited representation in the reference
+false positive — they reflect limited representation in the reference
 proteome. If the two fragments have diverged enough to preferentially hit
 *different* reference proteins with no overlap in their hit lists, the pair
 will not appear in the output at all. This is a known blind spot: because
@@ -556,7 +557,7 @@ ordered union of all fragments in the locus.
 `[merge_filters]` config section (see table above). For `PARTIAL_SPAN`
 candidates, if `fix_partial = yes`, the unsupported terminal fragment is
 dropped before merging. The source genes are written to
-`removed_genes.gff`, then the merged gene is constructed by collecting all
+`removed.gff`, then the merged gene is constructed by collecting all
 child features (exon, CDS, UTR) from every source model, sorting them by
 genomic coordinate, and recalculating CDS phase from scratch. New unique
 IDs are assigned using the `gene_template` and `trans_template` patterns;
@@ -570,7 +571,7 @@ position 1000.
 
 **Key parameters:** all `[merge_filters]` parameters, `gene_template`, `trans_template`  
 **Inputs:** validated/merge table (step 4 or 5), GFF  
-**Outputs:** `new_merges.gff` (full annotation with merges), `removed_genes.gff`
+**Outputs:** `merges.gff` (full annotation with merges), `removed.gff`
 
 ---
 
@@ -583,7 +584,7 @@ you commit the annotation to downstream analysis. It does not change any
 files or flag any genes — all decisions rest with the user.
 
 **What happens.** First, a gene count sanity check is run: the number of
-genes in the input annotation, the merged output, and `removed_genes.gff`
+genes in the input annotation, the merged output, and `removed.gff`
 are counted and verified against the expected value (input − removed +
 merged). A mismatch here means genes were silently dropped or duplicated
 during the merge and should be investigated before proceeding.
@@ -603,14 +604,14 @@ Common merge-introduced errors to watch for, and suggested actions:
 - **Exon/CDS coordinates extend beyond parent mRNA.** Locate the gene ID
   in the merged GFF and inspect the coordinates manually or in a genome
   browser. To determine whether the error was introduced by the merge or
-  was present in the original annotation, run AGAT on `removed_genes.gff`
+  was present in the original annotation, run AGAT on `removed.gff`
   (the original source fragments, written in step 6). If the same error
   appears there, it is pre-existing. If it only appears post-merge, remove
   the offending rows from `isoseq_validated.txt` (or `merge_candidates.txt`
   if step 5 was skipped) and re-run step 6.
 
 - **Incorrect or missing CDS phase.** Apply the same diagnostic: run AGAT
-  on `removed_genes.gff` to distinguish pre-existing phase errors from
+  on `removed.gff` to distinguish pre-existing phase errors from
   merge-introduced ones. merge_split_genes.pl recalculates phase from
   scratch, so newly introduced errors typically point to an unusual input
   structure. Re-running step 6 with `--flags STRONG` restricts merging to
@@ -621,7 +622,7 @@ Common merge-introduced errors to watch for, and suggested actions:
   `trans_template` in the config produce IDs that do not overlap with the
   existing annotation namespace. Adjust the templates and re-run step 6.
 
-**Inputs:** `new_merges.gff` (step 6)  
+**Inputs:** `merges.gff` (step 6)  
 **Outputs:** gene count summary and GT validation messages printed to terminal; no files written
 
 ---
@@ -724,8 +725,8 @@ you filter low-confidence calls in the TSV report when reference coverage
 of your gene family is sparse.
 
 **Key parameters:** `run_translation_validation`, `genome_fa`, `kalign_bin` / `mafft_bin`  
-**Inputs:** `new_merges.gff` (step 6), genome FASTA, reference proteome  
-**Outputs:** `transl_pass.gff3`, `transl_review.gff3`, `transl_fail.gff3`, `new_merges_validated.gff`
+**Inputs:** `merges.gff` (step 6), genome FASTA, reference proteome  
+**Outputs:** `pass.gff3`, `review.gff3`, `fail.gff3`, `report.tsv`, `pass_proteins.fa`, `validated.gff`
 
 ---
 
@@ -744,35 +745,35 @@ boundaries.
 **What happens.** AGAT is run on the final output GFF — the translation-
 validated PASS GFF if step 8 ran, or the full merged annotation if step 8
 was skipped. The corrected GFF that AGAT produces is saved alongside the
-input with `_agat` appended to the filename (e.g. `transl_pass_agat.gff3`
-or `new_merges_agat.gff`). Stderr and stdout are combined, filtered for
+input with `_agat` appended to the filename (e.g. `pass_agat.gff3`
+or `merges_agat.gff`). Stderr and stdout are combined, filtered for
 lines containing "error" or "warn" (case-insensitive), and the first 20
 lines are printed to the terminal. This step is purely informational — it
 surfaces gene-model coherence problems for manual review but does not
 modify any other pipeline files.
 
 **Key parameters:** `run_agat`  
-**Inputs:** `transl_pass.gff3` (or `new_merges.gff` if step 8 skipped)  
-**Outputs:** `transl_pass_agat.gff3` (or `new_merges_agat.gff`); first 20 error/warning lines printed to terminal
+**Inputs:** `pass.gff3` (or `merges.gff` if step 8 skipped)  
+**Outputs:** `pass_agat.gff3` (or `merges_agat.gff`); first 20 error/warning lines printed to terminal
 
 ---
 
 ### Outputs
 
-The primary deliverable is `new_merges_validated.gff` — the input
-annotation with split gene fragments removed and replaced by merged,
-translation-validated gene models. When step 8 is skipped, `new_merges.gff`
-serves the same role.
+The primary deliverable is `validated.gff` — the input annotation with
+split gene fragments removed and replaced by merged, translation-validated
+gene models. When step 8 is skipped, `merges.gff` serves the same role.
 
-`removed_genes.gff` records every source gene model that was deleted during
-merging. This file is important for provenance: if a merge is later
-determined to be incorrect it can be reversed by removing the merged gene
-and restoring the source features from this file.
+`removed.gff` records every source gene model that was deleted during
+merging. This file is needed for provenance: if a merge is later determined
+to be incorrect it can be reversed by removing the merged gene and restoring
+the source features from this file.
 
-The three translation validation files (`transl_pass.gff3`,
-`transl_review.gff3`, `transl_fail.gff3`) allow independent examination of
-each quality tier. REVIEW merges in particular are worth manual inspection:
-they translate well but their junction MSA score is borderline, often
-because the fragment boundary happens to fall in a low-complexity or
-gapped region of the alignment.
+The three translation validation GFFs (`pass.gff3`, `review.gff3`,
+`fail.gff3`) allow independent examination of each quality tier. REVIEW
+merges in particular are worth manual inspection: they translate but their
+junction MSA score is borderline, often because the fragment boundary falls
+in a low-complexity or gapped region of the alignment. `report.tsv` gives
+the full numeric detail (protein length, coverage metrics, per-junction MSA
+scores, fail reasons) for every merged gene.
 

@@ -46,6 +46,7 @@ use warnings;
 ##                        kalign3 is ~8x faster and recommended for routine runs
 ##   --kalign_bin PATH    Path to kalign binary (default: kalign in PATH)
 ##   --no_msa             Skip MSA; report translation + diamond only
+##   --scratch DIR        Directory for intermediate/scratch files (default: same as --out)
 ##   --min_junction F     Min per-junction MSA score to PASS (default: 0.5)
 ##   --min_merged_cov F   Min merged protein coverage by best ref hit (default: 0.60)
 ##   --min_ref_cov F      Min ref protein coverage by merged protein (default: 0.50)
@@ -73,12 +74,14 @@ use warnings;
 ##   diamond makedb --in uniprot_sprot.fasta --db uniprot_sprot.dmnd
 ##
 ## Outputs:
-##   <out>_report.tsv               Per-merge validation results
-##   <out>_pass.gff3                Merged genes that PASS all checks
-##   <out>_fail.gff3                Merged genes that FAIL (clear evidence of bad merge)
-##   <out>_review.gff3              Merged genes that need REVIEW (borderline)
-##   <out>_pass_proteins.fa         Translated proteins for PASS merges
-##   <out>_msa/                     Per-merge alignment files (if --keep_msa)
+##   <out>/report.tsv               Per-merge validation results (TSV, 20 columns)
+##   <out>/pass.gff3                Merged genes that PASS all checks
+##   <out>/fail.gff3                Merged genes that FAIL (clear evidence of bad merge)
+##   <out>/review.gff3              Merged genes that need REVIEW (borderline)
+##   <out>/pass_proteins.fa         Translated proteins for PASS merges
+##   <scratch>/msa/                 Per-merge alignment files (if --keep_msa)
+##
+## Note: <out> is used as a directory name, not a filename prefix.
 
 use Getopt::Long;
 use POSIX qw(floor);
@@ -1087,11 +1090,10 @@ for my $gid (keys %merge_info) {
     if ($transl_flag eq "FRAMESHIFT_DETECTED") {
         push @fail_reasons, "INTERNAL_STOP";
     }
-    if ($mrgd_cov < $min_merged_cov && $mflag ne "GOOD_MSA") {
+    if ($mflag eq "NO_HIT") {
+        push @fail_reasons, "NO_HIT";
+    } elsif ($mrgd_cov < $min_merged_cov && $mflag ne "GOOD_MSA") {
         push @fail_reasons, "LOW_MERGED_COV";
-    }
-    if ($mflag eq "NO_HIT" && $mrgd_cov < $min_merged_cov) {
-        push @fail_reasons, "NO_HIT_LOW_COV" unless grep { $_ eq "LOW_MERGED_COV" } @fail_reasons;
     }
 
     if (@fail_reasons) {
@@ -1122,7 +1124,7 @@ printf "  PASS:   %d\n  FAIL:   %d\n  REVIEW: %d\n",
 # ---------------------------------------------------------------------------
 print "\nSTEP L: Writing outputs...\n";
 
-# --- K1: TSV report ---
+# --- L1: TSV report ---
 my $report_file = "$out_dir/report.tsv";
 open my $rep, ">", $report_file or die "Cannot write $report_file: $!\n";
 print $rep join("\t",
@@ -1188,7 +1190,7 @@ for my $gid (sort keys %merge_info) {
 close $rep;
 print "  Report:      $report_file\n";
 
-# --- K2: Split GFF3 outputs ---
+# --- L2: Split GFF3 outputs ---
 my $pass_gff   = "$out_dir/pass.gff3";
 my $fail_gff   = "$out_dir/fail.gff3";
 my $review_gff = "$out_dir/review.gff3";
@@ -1226,7 +1228,7 @@ printf "  Pass GFF:   %s  (%d genes)\n", $pass_gff,   $counts{PASS};
 printf "  Fail GFF:   %s  (%d genes)\n", $fail_gff,   $counts{FAIL};
 printf "  Review GFF: %s  (%d genes)\n", $review_gff, $counts{REVIEW};
 
-# --- K3: Pass proteins FASTA ---
+# --- L3: Pass proteins FASTA ---
 my $pass_prot_fa = "$out_dir/pass_proteins.fa";
 open my $ppfh, ">", $pass_prot_fa or die "Cannot write $pass_prot_fa: $!\n";
 for my $gid (sort keys %results) {
