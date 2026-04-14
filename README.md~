@@ -1,0 +1,446 @@
+# Mender
+
+**Mender** is a pipeline for detecting and correcting erroneously split gene
+annotations in genome GFF3 files. Split genes are adjacent gene models that
+together cover a single reference protein — a common artifact of automated
+annotation tools such as Helixer.
+
+Evidence comes from two independent sources:
+1. **Diamond blastp** homology against a reference proteome (protein tiling)
+2. **PacBio IsoSeq** long reads that span two or more split fragments (optional but recommended)
+
+New merged genes are tagged with `source=Mender` and `merge_source=Mender` in
+the output GFF so they are easy to identify downstream.
+
+---
+
+## How the Protein Homology Analysis Works
+
+The core idea is simple: if two adjacent genes in the genome annotation each
+cover a non-overlapping portion of the same reference protein, they are likely
+two halves of a single gene that was erroneously split during automated
+annotation.
+
+### What is a "pair"?
+
+A **pair** is two genes that are adjacent (or near-adjacent) to each other in
+the genome — meaning they sit next to each other in the linear order of gene
+models along a chromosome, with no other non-nested gene between them
+(`genomic_dist = 1`). Mender also considers pairs with up to **4 gene
+positions** between them (`genomic_dist` up to 4), in case an additional gene
+sits inside the split locus. Nested genes (gene models that fall entirely
+within the coordinates of another gene) are excluded from the rank when
+calculating distances, since they would artificially inflate the apparent
+distance between flanking genes.
+
+### Step 1 — Fragment detection
+
+Each gene model in the query annotation has a corresponding protein sequence.
+These proteins are searched against a well-annotated reference proteome (e.g.
+*Anolis carolinensis* for reptile genomes) using `diamond blastp`. Mender only
+considers hits where the query protein covers **≤85% of the reference protein**
+— proteins with higher coverage are treated as complete homologs, not
+fragments. This subject coverage threshold can be adjusted in the config file.
+
+### Step 2 — Tiling test
+
+For each pair of adjacent genes, Mender checks whether their diamond
+alignments tile end-to-end on a shared reference protein. The key requirement
+is that the two alignments cover *different, non-overlapping* parts of the
+reference, and that they meet in the middle with a gap of no more than **±15
+amino acids** (the *tiling gap*, or *wiggle*). This tolerance accounts for
+natural fuzziness at the ends of HSPs and is configurable when running
+`find_split_genes.pl` manually.
+
+**What tiling looks like:**
+
+```
+Reference protein (500aa):
+1                                                 500
+|--------------------------------------------------|
+
+Gene A protein aligns to positions 10–210  (N-terminal fragment):
+ |--------Gene A--------|
+
+Gene B protein aligns to positions 215–480  (C-terminal fragment):
+                          |----------Gene B--------|
+
+                         ^
+                    tiling gap = 5aa
+```
+
+Gene A and Gene B each cover less than half of the reference on their own, but
+together they span most of it. Neither is a complete homolog — they look like
+two halves of the same gene.
+
+**Tiling gap — how the two alignments meet in the middle:**
+
+The tiling gap is the distance between the end of the left alignment and the
+start of the right alignment on the reference protein. Mender allows a gap of
+up to ±15aa (configurable) to account for alignment boundary fuzziness:
+
+```
+Perfect join (gap = 0):
+  Ref:  |---------Gene A---------|Gene B---------|
+                                 ^ meet exactly — PASSES
+
+Small gap (gap = +5aa, within ±15aa wiggle):
+  Ref:  |---------Gene A---------|·····|Gene B---|
+                                  5aa gap — PASSES
+
+Small overlap (gap = −3aa):
+  Ref:  |---------Gene A-----------|
+                               |---Gene B--------|
+                               ^^^  3aa overlap — PASSES
+
+Gap too large (gap = +40aa):
+  Ref:  |----Gene A----|                    |--Gene B--|
+                        ← 40aa gap → FAILS, not a tiling pair
+
+Overlap too large (gap = −20aa):
+  Ref:  |---------Gene A--------------------|
+                    |---Gene B--------------|
+                    ←  20aa overlap → FAILS, likely same domain
+```
+
+**Combined coverage — how much of the reference protein the pair spans:**
+
+Combined coverage is the total span from the leftmost alignment start to the
+rightmost alignment end, divided by the full reference protein length. It
+deliberately includes the tiling gap in the span, so it slightly overstates
+true coverage — but this is intentional and consistent.
+
+```
+Reference protein (500aa):
+1                                                 500
+|--------------------------------------------------|
+
+Gene A: aligns  10–210
+Gene B: aligns 215–480
+
+Combined span = 480 − 10 + 1 = 471aa
+Combined coverage = 471 / 500 × 100 = 94.2%
+
+Contrast with naive sum of individual coverages:
+  Gene A alone: 201/500 = 40.2%
+  Gene B alone: 266/500 = 53.2%
+  Naive sum     = 93.4%  ← close but would double-count overlapping pairs
+```
+
+A combined coverage below **60%** receives a `LOW_COV` flag. This is more
+likely to indicate that the two genes share a conserved domain (e.g. a
+protein family with a common motif) rather than being a genuine split gene.
+The threshold is configurable in the config file (`merge_filters` section) or
+via `--min_cov` when running `merge_split_genes.pl` manually.
+
+### Step 3 — Confidence from multiple homologs
+
+A key confidence measure is **`num_tiling_hits`**: how many *different*
+reference proteins independently support the same pair as tiling fragments.
+Because well-conserved genes have many homologs in a reference proteome, a
+genuine split will typically be supported by multiple proteins that all share
+the same domain structure. A pair where gene A always covers the N-terminal
+domain and gene B always covers the C-terminal domain across 10 different
+homologs is far more convincing than one supported by a single protein. As a
+rough guide:
+
+| `num_tiling_hits` | Interpretation |
+|---|---|
+| 1 | Thin evidence — verify with IsoSeq before acting |
+| 2–4 | Moderate evidence |
+| 5+ | Strong — consistent pattern across multiple homologs |
+| 10+ | Very strong |
+
+Low hit counts can also reflect small gene families in the reference proteome
+rather than false positives, so a 1-hit candidate supported by IsoSeq spanning
+reads is still worth merging.
+
+### Step 4 — Chaining into multi-gene groups
+
+Adjacent pairs that share a gene are chained together. For example, if gene
+A–gene B passes the tiling test and gene B–gene C also passes, they become a
+single three-gene merge candidate A→B→C. Chains of 3 or more genes are then
+refined before writing to the merge table:
+
+- **Trimming**: if a terminal junction has only 1 tiling hit while the rest of
+  the chain is strongly supported (≥6 hits elsewhere), the terminal gene is
+  dropped. This prevents a weakly supported gene from being dragged into a
+  merge by a strong neighbor. Trimming is applied iteratively until neither
+  terminal qualifies for removal.
+- **Splitting**: if an internal junction has only 1 tiling hit while both of
+  its flanking junctions are strongly supported, the chain is split at that
+  junction into two separate merge candidates.
+
+The asymmetry threshold for both trimming and splitting (default: 6) is
+configurable when running `find_split_genes.pl` manually.
+
+If a non-adjacent gene sits inside the merge locus (i.e. between two genes in
+the chain), the candidate receives a `SKIPPED_GENE` flag. That skipped gene
+may be another split fragment that failed the filters, or an unrelated gene —
+it is worth checking before merging.
+
+### Step 5 — Quality flags
+
+Every merge candidate receives one or more quality flags summarizing the
+protein evidence:
+
+| Flag | Meaning |
+|------|---------|
+| `noflag` | Directly adjacent, ≥2 tiling hits, coverage ≥60% — solid |
+| `STRONG` | All junctions ≥3 tiling hits — highest confidence |
+| `SINGLE_HIT` | Only 1 independent tiling hit — verify with IsoSeq |
+| `WEAK_END` | Low-evidence terminal junction survived trimming |
+| `WEAK_INTERNAL` | Low-evidence internal junction survived splitting |
+| `LOW_COV` | Combined coverage <60% — likely domain sharing |
+| `SKIPPED_GENE` | Non-adjacent gene inside merge locus — review manually |
+
+The recommended starting point is to merge `STRONG` and `noflag` candidates
+while skipping `SKIPPED_GENE` and `LOW_COV`. These defaults are set in
+`mender.cfg.example` and can be adjusted in the `[merge_filters]` section of
+the config, or via command line options to `merge_split_genes.pl`.
+
+---
+
+## Dependencies
+
+| Tool | Purpose |
+|------|---------|
+| `perl` | Run all scripts |
+| `diamond` | blastp of query proteome vs reference |
+| `bedtools` | IsoSeq read–gene overlap (optional) |
+| `gt` (GenomeTools) | GFF3 validation (optional) |
+| `agat` | Biological GFF consistency check (optional) |
+
+All tools are expected to be in `$PATH` unless explicit paths are set in the
+config file.
+
+Install only what you need. For example, if you are not using IsoSeq you can
+skip `bedtools`; if you are skipping the validation step you can skip `gt` and
+`agat`.
+
+```bash
+# Install the tools you need via conda (customize this list for your run)
+conda install -c bioconda diamond bedtools genometools-genometools agat perl
+```
+
+---
+
+## Quick Start
+
+```bash
+# Copy the example config and customize it for your project
+cp mender.cfg.example myproject.cfg
+# edit myproject.cfg — set input GFF, proteome FA, subject FA, and optionally isoseq_gff
+
+# Run the full pipeline
+perl run_mender.pl --config myproject.cfg
+
+# Dry run — preview what would be merged without writing files
+perl run_mender.pl --config myproject.cfg --dry_run
+
+# Run specific steps only
+perl run_mender.pl --config myproject.cfg --steps 4,6
+```
+
+`mender.cfg.example` is a fully annotated template — all options are documented
+there. Do not edit it directly; copy it to a project-specific name first.
+
+---
+
+## Pipeline Steps
+
+| Step | Name | Description |
+|------|------|-------------|
+| 1 | prepare | Clean protein FASTA (remove internal stops), extract GFF subsets |
+| 2 | diamond | Run `diamond blastp` of query proteome vs reference proteome |
+| 3 | bedtools | `bedtools intersect` to find IsoSeq reads overlapping gene models (skipped if no `isoseq_gff`) |
+| 4 | find | `find_split_genes.pl` — identify split gene candidates from diamond output |
+| 5 | isoseq | `validate_merge_with_isoseq.pl` — add spanning read evidence to merge table (skipped if no `isoseq_gff`) |
+| 6 | merge | `merge_split_genes.pl` — apply merges to the GFF |
+| 7 | check | `gt gff3validator` and `agat` validation of output GFF |
+
+Steps 3 and 5 are automatically skipped when `isoseq_gff` is not set in the
+config. In that case, step 6 uses protein evidence flags only.
+
+---
+
+## Scripts
+
+### `run_mender.pl`
+Pipeline wrapper. Reads `mender.cfg` and runs steps in order.
+
+```
+perl run_mender.pl --config mender.cfg [--steps 1,2,3] [--dry_run]
+```
+
+### `find_split_genes.pl`
+Identifies split gene candidates from diamond blastp output. For each pair of
+adjacent genes that together tile a reference protein, emits a candidate row.
+Adjacent pairs sharing a gene are chained into multi-gene groups.
+
+```
+perl find_split_genes.pl diamond.out annotation.gff subject.fa query.fa
+```
+
+**Output files:**
+- `split_genes_summary.txt` — one row per gene pair, best supporting hit only
+- `split_genes_detail.txt` — one row per tiling hit per pair (full evidence)
+- `split_genes_merge.txt` — one row per merge candidate (chained pairs)
+
+### `validate_merge_with_isoseq.pl`
+Adds IsoSeq spanning read evidence to the merge table. A spanning read is a
+long-read transcript that overlaps 2+ genes in a merge group — independent
+molecular evidence that the genes are transcribed as one unit.
+
+```
+# Prepare overlaps first:
+grep -P "\tgene\t"  annotation.gff > models.gene.gff
+grep -P "\tmRNA\t"  isoseq.gff     > isoseq.mrna.gff
+bedtools intersect -a isoseq.mrna.gff -b models.gene.gff -wa -wb | \
+    perl -p -e 's/.+\sID=([^;]+).+\sID=([^;]+).*$/$1\t$2/' > overlaps
+
+perl validate_merge_with_isoseq.pl split_genes_merge.txt overlaps > validated_merge.txt
+```
+
+Adds three columns to the merge table: `spanning_isoseq_count`,
+`spanning_isoseq_detail`, `isoseq_flag`.
+
+### `merge_split_genes.pl`
+Merges split genes in the GFF based on the validated merge table. Source genes
+are removed and replaced by a new merged gene whose transcripts are built by
+joining exon/CDS/UTR features in genomic order. CDS phases are recalculated.
+
+```
+perl merge_split_genes.pl \
+    --fix_partial \
+    --skip_flags SKIPPED_GENE,LOW_COV \
+    --gene_template  "PREFIX_g[GCOUNT:6]" \
+    --trans_template "PREFIX_t[GCOUNT:6][TCOUNT:3]" \
+    validated_merge.txt input.gff output.gff
+```
+
+**Output files:**
+- `output.gff` — merged annotation (all new features have `source=Mender`)
+- `removed_genes.gff` — source genes removed (audit trail)
+- `output.log` — merge ID → new gene ID mapping and run parameters
+
+### `split_gene_report_checks.sh`
+Bash utility with useful queries on all four output files. Run after step 4/5
+to explore candidates before merging.
+
+```bash
+bash split_gene_report_checks.sh
+```
+
+---
+
+## Output File Column Reference
+
+### `split_genes_merge.txt` (17 columns)
+```
+1:merge_id              unique merge group identifier
+2:num_genes             number of genes in this merge
+3:genes_in_order        comma-sep gene IDs in genomic order
+4:coords_in_order       comma-sep coordinates (chr.start.end)
+5:ref                   chromosome
+6:gene_descs            comma-sep gene descriptions
+7:best_hit              reference protein best representing the chain
+8:hit_desc              description of best_hit
+9:best_combined_cov_pct % of reference protein covered by the chain
+10:best_gap             aa gap between the two best tiling alignments
+11:evalues              comma-sep e-values vs best_hit
+12:junction_tiling_hits pipe-sep hit counts per junction (chains only)
+13:junction_genomic_dist pipe-sep rank distances per junction (chains only)
+14:skipped_genes        genes sitting inside the merge locus (worth checking)
+15:max_tiling_hits      highest independent tiling hit count across any pair
+16:num_pairs_in_chain   number of pairwise relationships in the chain
+17:flag                 quality flag(s) — see Flag Definitions below
+```
+
+### `validated_merge.txt` (20 columns)
+Same as above plus:
+```
+18:spanning_isoseq_count  number of IsoSeq reads spanning 2+ genes
+19:spanning_isoseq_detail per-read detail: read_id(Nof M):gene1+gene2+...
+20:isoseq_flag            FULL_SPAN | PARTIAL_SPAN | none
+```
+
+---
+
+## Flag Definitions
+
+### Protein evidence flags (column 17)
+| Flag | Meaning |
+|------|---------|
+| `noflag` | Directly adjacent, ≥2 tiling hits, coverage ≥60% — solid candidate |
+| `STRONG` | All junctions ≥3 tiling hits — highest confidence protein evidence |
+| `SINGLE_HIT` | All junctions have exactly 1 tiling hit — thin evidence, rely on IsoSeq |
+| `WEAK_END` | Terminal junction has 1–2 hits but survived trimming |
+| `WEAK_INTERNAL` | Internal junction has 1–2 hits but survived splitting |
+| `LOW_COV` | Combined coverage <60% — likely domain sharing, not a split gene |
+| `SKIPPED_GENE` | A non-adjacent gene sits inside the merge locus — review manually |
+
+### IsoSeq flags (column 20)
+| Flag | Meaning |
+|------|---------|
+| `FULL_SPAN` | At least one read spans all genes — strong confirmation |
+| `PARTIAL_SPAN` | Reads exist but none reach a terminal gene — structural signal that a terminal gene may not belong. Use `--fix_partial` to auto-trim. |
+| `none` | No spanning reads found — may reflect expression stage, not gene structure |
+
+---
+
+## New Gene ID Templates
+
+New gene and transcript IDs are controlled by `--gene_template` and
+`--trans_template` (or the `[ids]` section in the config file). Template
+tokens:
+
+| Token | Meaning |
+|-------|---------|
+| `[GCOUNT:N]` | Gene counter, zero-padded to N digits |
+| `[TCOUNT:N]` | Transcript counter, zero-padded to N digits |
+| `[DATE]` | Today's date in YYYYMMDD format |
+
+**Examples:**
+```ini
+# Generic date-stamped (default — safe for any organism)
+gene_template  = MERGE[DATE]g[GCOUNT:6]000
+trans_template = MERGE[DATE]t[GCOUNT:6][TCOUNT:3]
+
+# Organism-specific (chameleon CCA3 style)
+gene_template  = CCA3g1[GCOUNT:5]000
+trans_template = CCA3t1[GCOUNT:5][TCOUNT:3]
+
+# Medicago style
+gene_template  = MS.gene[GCOUNT:5]
+trans_template = MS.gene[GCOUNT:5].t[TCOUNT]
+```
+
+The counter starts above the highest existing ID of that pattern found in the
+input GFF, so new IDs never collide with existing ones.
+
+---
+
+## Without IsoSeq
+
+IsoSeq is optional. If `isoseq_gff` is left blank in the config, steps 3 and
+5 are skipped. Use stricter protein-evidence filters to compensate:
+
+```bash
+perl merge_split_genes.pl \
+    --flags STRONG \
+    --skip_flags SKIPPED_GENE,LOW_COV \
+    split_genes_merge.txt input.gff output.gff
+```
+
+---
+
+## Examples
+
+The `examples/` directory contains files from the *Chamaeleo calyptratus*
+CCA3 genome annotation run (April 2026):
+
+- `chacal.cfg` — project config used for the CCA3 run
+- `pipeline_summary.txt` — full results summary and manual review notes
+- `validated_merge.txt` — merge table with IsoSeq evidence (1067 candidates)
+- `new_merges.log` — run log from `merge_split_genes.pl`

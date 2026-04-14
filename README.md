@@ -365,7 +365,7 @@ Use `--steps 4,6` to run only specific steps, or omit `--steps` to run all.
 | 6 | merge | `merge_split_genes.pl` | Apply merges to the GFF; write new merged genes |
 | 7 | gt | `gt gff3validator` | Fast GFF3 spec check on new Mender genes only; non-fatal |
 | 8 | transl | `validate_merge_translation.pl` | Translate merged proteins, score junctions, assign PASS/FAIL/REVIEW |
-| 9 | agat | `agat_convert_sp_gxf2gxf.pl` | Biological consistency check on PASS GFF only; slow, optional |
+| 9 | agat | `agat_convert_sp_gxf2gxf.pl` | Gene-model check on PASS GFF only; slow, optional |
 
 Steps 3 and 5 are automatically skipped when `isoseq_gff` is not set.
 Step 8 is skipped when `run_translation_validation = no` in config.

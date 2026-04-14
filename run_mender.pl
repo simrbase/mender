@@ -627,11 +627,11 @@ if ($run_steps{8}) {
 }
 
 # ---------------------------------------------------------------------------
-# STEP 9: AGAT BIOLOGICAL VALIDATION (on pass GFF only)
+# STEP 9: AGAT GENE-MODEL CHECK (on pass GFF only)
 # ---------------------------------------------------------------------------
 if ($run_steps{9}) {
     print "\n", "=" x 60, "\n";
-    print "STEP 9: AGAT BIOLOGICAL VALIDATION\n";
+    print "STEP 9: AGAT GENE-MODEL CHECK\n";
     print "=" x 60, "\n";
 
     my $tv_out    = $tv_out_prefix || "$workdir/transl";
@@ -651,7 +651,7 @@ if ($run_steps{9}) {
     run_cmd(
         "$agat_bin -g $target_gff -o /dev/null 2>&1 | " .
         "grep -i 'error\\|warn' | head -20",
-        "Biological consistency validation (AGAT)"
+        "Gene-model check (AGAT)"
     );
 }
 

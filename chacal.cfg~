@@ -29,15 +29,15 @@
 ## Full path to your genome annotation GFF3 file.
 ## Must be sorted parent-before-child.
 ## If not sorted: gt gff3 -sort -tidy -retainids your.gff > sorted.gff
-gff = genomic.gff
+gff = /n/sci/SCI-004219-SBCHAMELEO/Chamaeleo_calyptratus/genomes/CCA3-ref/analysis/combinedModels/CCA3-ref.merged.06192025.slim.gff 
 
 ## Genome sequence FASTA (required for step 8 translation validation).
 ## Used by gffread to translate merged CDS and source gene CDS into proteins.
-genome_fa = genome.fa
+genome_fa = /n/sci/SCI-004219-SBCHAMELEO/Chamaeleo_calyptratus/genomes/CCA3-ref/CCA3C.fasta 
 
 ## Protein FASTA for the genome being annotated (the query).
 ## Internal stop codons will be removed automatically in step 1.
-proteome_fa = protein.aa.fa
+proteome_fa = /n/sci/SCI-004219-SBCHAMELEO/Chamaeleo_calyptratus/genomes/CCA3-ref/analysis/combinedModels/protein.aa.fa 
 
 ## Reference proteome FASTA for diamond blastp (the subject/database).
 ## Should be a well-annotated proteome from a phylogenetically close species.
@@ -83,12 +83,12 @@ proteome_fa = protein.aa.fa
 ##   Birds:      chicken (GRCg7b RefSeq), zebra finch
 ##   Fish:       zebrafish (GRCz11 RefSeq), medaka
 ##
-subject_fa = anolis_proteome.fa
+subject_fa = /n/sci/SCI-004219-SBCHAMELEO/Chamaeleo_calyptratus/genomes/CCA3-ref/analysis/combinedModels/Anolis_carolinensis.AnoCar2.0v2.pep.all.fa 
 
 ## IsoSeq GFF file (mRNA features from long-read transcriptome).
 ## Used in step 3 (bedtools) and step 5 (IsoSeq validation).
 ## Leave blank to skip IsoSeq steps — pipeline will use protein evidence only.
-isoseq_gff =
+isoseq_gff = /n/sci/SCI-004219-SBCHAMELEO/Chamaeleo_calyptratus/genomes/CCA3-ref/analysis/combinedModels/CCA3C_isoseq.agat.mRNA.gff
 
 ## Transcript->gene mapping is derived automatically from the input GFF.
 
@@ -296,31 +296,20 @@ min_merged_cov = 0.60
 ## Default: 0.50.
 min_ref_cov = 0.50
 
-## no_msa: yes/no — skip MSA entirely; report translation + diamond only.
-## Faster but loses junction scoring. PASS requires GOOD_MSA unless no_msa = yes.
-no_msa = no
+## no_mafft: yes/no — skip MSA entirely; report translation + diamond only.
+## Faster but loses junction scoring. PASS requires GOOD_MSA unless no_mafft = yes.
+no_mafft = no
 
-## aligner: MSA tool and strategy for junction scoring.
-##   mafft_fast  (default) — mafft --retree 2 --maxiterate 0
-##                           FFT-NS-2; no iterative refinement.
-##                           ~2–3× faster than mafft_auto; effectively identical
-##                           accuracy for small sets of related proteins.
-##   mafft_auto  — mafft --auto; slower but uses the most accurate MAFFT
-##                 strategy for the input size. Recommended for keep_msa = yes
-##                 (inspection runs where you read the alignments by eye).
-##   kalign3     — kalign3 progressive aligner; ~5–10× faster than mafft_auto.
-##                 Requires kalign to be in PATH or set via kalign_bin below.
-##                 Accuracy slightly lower for divergent sequences; suitable
-##                 when speed matters more than fine-grained junction scoring.
+## aligner: mafft_fast | mafft_auto | kalign3 (see mender.cfg.example for details)
 aligner = mafft_fast
 
 ## keep_msa: yes/no — write per-merge alignment files to <transl_out_prefix>_msa/.
 ## Useful for inspecting individual junction alignments. Disk-intensive on large runs.
-keep_msa = no
+keep_msa = yes
 
 ## transl_out_prefix: output file prefix for translation validation results.
 ## Leave blank to use <workdir>/transl (e.g. mender_workdir/transl).
-transl_out_prefix =
+transl_out_prefix = mender_workdir/transl_mafft
 
 ## swissprot_fa: path to UniProt/SwissProt FASTA for MSA reference sequences.
 ## Manually curated proteins give better junction scoring than the species
@@ -331,22 +320,14 @@ transl_out_prefix =
 ##   wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
 ##   gunzip uniprot_sprot.fasta.gz
 ##   diamond makedb --in uniprot_sprot.fasta --db uniprot_sprot.dmnd
-swissprot_fa =
+swissprot_fa = /n/sci/SCI-004219-SBCHAMELEO/Chamaeleo_calyptratus/genomes/CCA3-ref/analysis/combinedModels/split_gene_merging/mender/uniprot_sprot.fasta
 
 ## swissprot_db: pre-built diamond DB from swissprot_fa (built automatically if blank).
 swissprot_db =
 
-## final_gff_include_review: yes/no — include REVIEW merges in the final validated GFF.
-## REVIEW merges passed basic translation checks but have borderline MSA junction scores.
-## yes (default): REVIEW merges are kept — trusts IsoSeq + tiling evidence; MSA flag is
-##                informational. Recommended when IsoSeq data is available.
-## no: REVIEW merges are replaced with source genes — requires a clean MSA score to be
-##     included. More conservative; use when IsoSeq coverage is sparse.
-final_gff_include_review = yes
-
 ## run_agat: yes/no — run agat_convert_sp_gxf2gxf.pl (step 9, slow).
 ## Runs on the _pass.gff3 from step 8 (or full merged GFF if step 8 was skipped).
-## Checks gene-model consistency (CDS/exon structure, orphan features, etc).
+## Checks biological consistency (CDS/exon structure, orphan features, etc).
 ## Output is discarded (/dev/null) — only warnings and errors are reported.
 run_agat = yes
 
