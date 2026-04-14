@@ -102,9 +102,10 @@ my $run_prefix     = cfg("output", "run_prefix",   "")
            "  Example: run_prefix = 20260414\n";
 die "ERROR: run_prefix must not contain '/' or spaces: '$run_prefix'\n"
     if $run_prefix =~ m{[/\s]};
-my $results_prefix = "$results_dir/$run_prefix";
-my $output_gff     = "${results_prefix}_merges.gff";
-my $removed_gff    = "${results_prefix}_removed.gff";
+my $run_dir        = "$results_dir/$run_prefix";
+my $run_workdir    = "$run_dir/work";
+my $output_gff     = "$run_dir/merges.gff";
+my $removed_gff    = "$run_dir/removed.gff";
 
 # diamond
 my $threads       = cfg("diamond", "threads",  "4");
@@ -173,8 +174,8 @@ my $diamond_out      = "$workdir/diamond.out";
 my $genes_gff        = "$workdir/models.gene.gff";
 my $isoseq_mrna_gff  = "$workdir/isoseq.mrna.gff";
 my $overlaps         = "$workdir/all.overlaps";
-my $merge_table      = "$workdir/merge_candidates.txt";
-my $validated_table  = "$workdir/isoseq_validated.txt";
+my $merge_table      = "$run_workdir/merge_candidates.txt";
+my $validated_table  = "$run_workdir/isoseq_validated.txt";
 my $find_script      = "$scripts_dir/find_split_genes.pl";
 my $isoseq_script    = "$scripts_dir/validate_merge_with_isoseq.pl";
 my $merge_script     = "$scripts_dir/merge_split_genes.pl";
@@ -258,8 +259,9 @@ print "Input GFF:       $gff\n";
 print "Proteome FA:     $proteome_fa\n";
 print "Subject FA:      $subject_fa\n";
 print "IsoSeq GFF:      ", ($isoseq_gff || "(not provided)"), "\n";
-print "Results dir:     $results_dir/$run_prefix\n";
-print "Workdir:         $workdir\n";
+print "Run dir:         $run_dir\n";
+print "Run workdir:     $run_workdir\n";
+print "Shared workdir:  $workdir\n";
 print "DB dir:          $db_dir\n";
 print "Gene template:   $gene_template\n";
 print "Trans template:  $trans_template\n";
@@ -348,7 +350,7 @@ print "=" x 60, "\n";
     }
 }
 
-# create workdir, db dir, and results dir
+# create workdir, db dir, results dir, run dir, and run workdir
 unless ($dry_run) {
     mkdir $workdir unless -d $workdir;
     die "ERROR: could not create workdir: $workdir\n" unless -d $workdir;
@@ -356,6 +358,10 @@ unless ($dry_run) {
     die "ERROR: could not create db_dir: $db_dir\n" unless -d $db_dir;
     mkdir $results_dir unless -d $results_dir;
     die "ERROR: could not create results_dir: $results_dir\n" unless -d $results_dir;
+    mkdir $run_dir unless -d $run_dir;
+    die "ERROR: could not create run_dir: $run_dir\n" unless -d $run_dir;
+    mkdir $run_workdir unless -d $run_workdir;
+    die "ERROR: could not create run_workdir: $run_workdir\n" unless -d $run_workdir;
 }
 
 # ---------------------------------------------------------------------------
@@ -477,10 +483,10 @@ if ($run_steps{4}) {
     );
 
     # move outputs to workdir
-    run_cmd("mv split_genes_summary.txt split_genes_detail.txt $workdir/ && " .
-            "mv split_genes_merge.txt $workdir/merge_candidates.txt",
-            "Move find_split_genes outputs to workdir");
-    $merge_table = "$workdir/merge_candidates.txt";
+    run_cmd("mv split_genes_summary.txt split_genes_detail.txt $run_workdir/ && " .
+            "mv split_genes_merge.txt $run_workdir/merge_candidates.txt",
+            "Move find_split_genes outputs to run workdir");
+    $merge_table = "$run_workdir/merge_candidates.txt";
 }
 
 # ---------------------------------------------------------------------------
@@ -612,7 +618,7 @@ if ($run_steps{8}) {
     check_file($subject_fa,   "subject_fa (ref proteome)");
     check_file($transl_script, "validate_merge_translation.pl");
 
-    my $tv_out = $results_prefix;
+    my $tv_out = $run_dir;
 
     my $tv_cmd = "$perl_bin $transl_script"
         . " --merged_gff $output_gff"
@@ -622,6 +628,7 @@ if ($run_steps{8}) {
         . " --diamond_db $diamond_db"
         . " --merge_table $validated_table"
         . " --out $tv_out"
+        . " --scratch $run_workdir"
         . " --threads $threads"
         . " --min_junction $tv_min_junction"
         . " --min_merged_cov $tv_min_mrgd_cov"
@@ -645,8 +652,8 @@ if ($run_steps{8}) {
 
     unless ($dry_run) {
         print "\n--- Translation validation summary ---\n";
-        my $pass_gff   = "${tv_out}_pass.gff3";
-        my $report_tsv = "${tv_out}_report.tsv";
+        my $pass_gff   = "$tv_out/pass.gff3";
+        my $report_tsv = "$tv_out/report.tsv";
         if (-f $report_tsv) {
             my $pass   = `grep -c 'PASS'   $report_tsv 2>/dev/null` || 0;
             my $fail   = `grep -c 'FAIL'   $report_tsv 2>/dev/null` || 0;
@@ -654,8 +661,8 @@ if ($run_steps{8}) {
             chomp ($pass, $fail, $review);
             # subtract header line matches if any
             print "  Report:   $report_tsv\n";
-            print "  Pass GFF: ${tv_out}_pass.gff3\n";
-            print "  Fail GFF: ${tv_out}_fail.gff3\n";
+            print "  Pass GFF: $tv_out/pass.gff3\n";
+            print "  Fail GFF: $tv_out/fail.gff3\n";
         }
     }
 }
@@ -668,8 +675,8 @@ if ($run_steps{9}) {
     print "STEP 9: AGAT GENE-MODEL CHECK\n";
     print "=" x 60, "\n";
 
-    my $tv_out = $results_prefix;
-    my $pass_gff  = "${tv_out}_pass.gff3";
+    my $tv_out = $run_dir;
+    my $pass_gff  = "$tv_out/pass.gff3";
 
     # fall back to full merged GFF if translation validation was not run
     my $target_gff = (-f $pass_gff) ? $pass_gff : $output_gff;
@@ -701,9 +708,9 @@ if ($run_steps{9}) {
 # Generated automatically whenever translation validation outputs are present.
 # ---------------------------------------------------------------------------
 {
-    my $tv_out     = $results_prefix;
-    my $fail_gff   = "${tv_out}_fail.gff3";
-    my $report_tsv = "${tv_out}_report.tsv";
+    my $tv_out     = $run_dir;
+    my $fail_gff   = "$tv_out/fail.gff3";
+    my $report_tsv = "$tv_out/report.tsv";
 
     if (-f $fail_gff && !$dry_run) {
         print "\n", "=" x 60, "\n";
@@ -751,7 +758,7 @@ if ($run_steps{9}) {
         $parse_excl_gff->($fail_gff);
         $n_fail_excl = scalar keys %exclude;
 
-        my $review_gff = "${tv_out}_review.gff3";
+        my $review_gff = "$tv_out/review.gff3";
         if ($tv_final_incl_review =~ /^no$/i && -f $review_gff) {
             my $before = scalar keys %exclude;
             $parse_excl_gff->($review_gff);
@@ -779,7 +786,7 @@ if ($run_steps{9}) {
         }
 
         # Write final validated GFF
-        my $validated_gff = "${results_prefix}_validated.gff";
+        my $validated_gff = "$run_dir/validated.gff";
         {
             open my $in,  "<", $output_gff   or die "Cannot open $output_gff: $!\n";
             open my $out, ">", $validated_gff or die "Cannot write $validated_gff: $!\n";
@@ -849,9 +856,9 @@ if ($run_steps{9}) {
     my $elapsed_str = sprintf "%dh %02dm %02ds",
                       int($elapsed/3600), int(($elapsed%3600)/60), $elapsed%60;
 
-    my $tv_out        = $results_prefix;
-    my $validated_gff = "${results_prefix}_validated.gff";
-    my $report_file   = "${results_prefix}_run_report.txt";
+    my $tv_out        = $run_dir;
+    my $validated_gff = "$run_dir/validated.gff";
+    my $report_file   = "$run_dir/run_report.txt";
 
     my @rpt;  # lines to write
 
@@ -874,10 +881,10 @@ if ($run_steps{9}) {
     $r->("isoseq_gff:      " . ($isoseq_gff || "(not provided)"));
 
     $h->("OUTPUT");
-    $r->("workdir:         $workdir");
+    $r->("shared_workdir:  $workdir");
     $r->("db_dir:          $db_dir");
-    $r->("results_dir:     $results_dir");
-    $r->("run_prefix:      $run_prefix");
+    $r->("run_dir:         $run_dir");
+    $r->("run_workdir:     $run_workdir");
     $r->("output_gff:      $output_gff");
     $r->("removed_gff:     $removed_gff");
     $r->("validated_gff:   $validated_gff  (" .
@@ -926,8 +933,8 @@ if ($run_steps{9}) {
     $r->("  keep_msa:                   " . ($tv_keep_msa =~ /^yes$/i ? "yes" : "no"));
     $r->("  swissprot_fa:               " . ($tv_swissprot_fa || "(not set — using ref_fa)"));
     $r->("  swissprot_db:               " . ($tv_swissprot_fa ? $tv_swissprot_db : "(n/a — no swissprot_fa)"));
-    $r->("  results_dir:                $results_dir");
-    $r->("  run_prefix:                 $run_prefix");
+    $r->("  run_dir:                    $run_dir");
+    $r->("  run_workdir:                $run_workdir");
     $r->("  final_gff_include_review:   " . ($tv_final_incl_review =~ /^no$/i ? "no" : "yes"));
     $r->("  run_agat:                   " . ($run_agat =~ /^no$/i ? "no" : "yes"));
 
@@ -945,7 +952,7 @@ if ($run_steps{9}) {
     }
 
     # Results from TSV report
-    my $report_tsv = "${tv_out}_report.tsv";
+    my $report_tsv = "$tv_out/report.tsv";
     if (-f $report_tsv) {
         $h->("RESULTS");
         my (%counts, $total);
@@ -978,13 +985,13 @@ if ($run_steps{9}) {
                              : "FAIL replaced with source genes; REVIEW retained") .
                          ")"],
         [$removed_gff,   "source genes removed during merge (audit trail)"],
-        ["${tv_out}_report.tsv",          "per-merge validation results"],
-        ["${tv_out}_pass.gff3",           "PASS merges only"],
-        ["${tv_out}_review.gff3",         "REVIEW merges (borderline MSA score)"],
-        ["${tv_out}_fail.gff3",           "FAIL merges only"],
-        ["${tv_out}_pass_proteins.fa",    "translated proteins for PASS merges"],
-        ["$workdir/merge_candidates.txt", "merge candidates from step 4"],
-        ["$workdir/isoseq_validated.txt", "IsoSeq-validated merge table (step 5)"],
+        ["$tv_out/report.tsv",          "per-merge validation results"],
+        ["$tv_out/pass.gff3",           "PASS merges only"],
+        ["$tv_out/review.gff3",         "REVIEW merges (borderline MSA score)"],
+        ["$tv_out/fail.gff3",           "FAIL merges only"],
+        ["$tv_out/pass_proteins.fa",    "translated proteins for PASS merges"],
+        ["$run_workdir/merge_candidates.txt", "merge candidates from step 4"],
+        ["$run_workdir/isoseq_validated.txt", "IsoSeq-validated merge table (step 5)"],
     );
     for my $entry (@out_files) {
         my ($file, $desc) = @$entry;
@@ -1013,7 +1020,7 @@ print "\n", "=" x 60, "\n";
 print $dry_run ? "DRY RUN COMPLETE\n" : "MENDER PIPELINE COMPLETE\n";
 print "Output GFF (all merges):     $output_gff\n" unless $dry_run;
 {
-    my $validated_gff = "${results_prefix}_validated.gff";
+    my $validated_gff = "$run_dir/validated.gff";
     print "Output GFF (validated only): $validated_gff\n"
         if -f $validated_gff && !$dry_run;
 }

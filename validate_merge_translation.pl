@@ -115,6 +115,7 @@ my $kalign_bin     = "kalign";
 my $aligner        = "mafft_fast";  # mafft_fast | mafft_auto | kalign3
 my $swissprot_fa   = undef;
 my $swissprot_db   = undef;
+my $scratch        = undef;   # directory for intermediate/scratch files
 
 GetOptions(
     "merged_gff=s"      => \$merged_gff,
@@ -143,6 +144,7 @@ GetOptions(
     "kalign_bin=s"      => \$kalign_bin,
     "swissprot_fa=s"    => \$swissprot_fa,
     "swissprot_db=s"    => \$swissprot_db,
+    "scratch=s"         => \$scratch,
 ) or die "Run: perl $0 --help for usage\n";
 
 die "ERROR: --aligner must be one of: mafft_fast, mafft_auto, kalign3 (got: $aligner)\n"
@@ -172,6 +174,14 @@ my $wsum = $w_conservation + $w_continuity + $w_gap;
 die sprintf("ERROR: --w_conservation + --w_continuity + --w_gap must sum to 1.0 (got %.3f)\n", $wsum)
     unless abs($wsum - 1.0) < 0.001;
 
+# $out is the run directory; $scratch is for intermediate files
+my $out_dir     = $out;
+my $scratch_dir = defined($scratch) ? $scratch : $out;
+
+# Ensure both directories exist
+make_path($out_dir)     unless -d $out_dir;
+make_path($scratch_dir) unless -d $scratch_dir;
+
 print "=" x 60, "\n";
 print "VALIDATE MERGE TRANSLATION\n";
 print "=" x 60, "\n";
@@ -180,7 +190,8 @@ printf "orig_gff:       %s\n", $orig_gff;
 printf "genome_fa:      %s\n", $genome_fa;
 printf "ref_fa:         %s\n", $ref_fa;
 printf "swissprot_fa:   %s\n", ($swissprot_fa // "(not set — MSA will use ref_fa sequences)");
-printf "out:            %s\n", $out;
+printf "out_dir:        %s\n", $out_dir;
+printf "scratch_dir:    %s\n", $scratch_dir;
 printf "no_msa:         %s\n", ($no_msa ? "yes" : "no");
 printf "aligner:        %s\n", ($no_msa ? "n/a" : $aligner);
 printf "min_junction:   %.2f\n", $min_junction;
@@ -416,8 +427,8 @@ printf "  Found in orig GFF:    %d\n", $n_src_found;
 # ---------------------------------------------------------------------------
 print "\nSTEP C: Translating merged proteins (gffread)...\n";
 
-my $merged_prot_fa = "${out}_merged_proteins.fa";
-my $gffread_log    = "${out}_gffread.log";
+my $merged_prot_fa = "$scratch_dir/merged_proteins.fa";
+my $gffread_log    = "$scratch_dir/gffread.log";
 
 # Truncate gffread log; steps C and D both append to it.
 open(my $grl, ">", $gffread_log) or warn "Cannot create $gffread_log: $!\n"; close $grl;
@@ -476,7 +487,7 @@ printf "  With internal stops:       %d\n", scalar grep { $has_internal_stop{$_}
 #   - unknown AA (.) replaced with X  (gffread emits . for N-containing codons;
 #     diamond rejects . but accepts X)
 #   - header is the gene ID so diamond hits come back keyed by gene ID directly
-my $diamond_query_fa = "${out}_merged_proteins_clean.fa";
+my $diamond_query_fa = "$scratch_dir/merged_proteins_clean.fa";
 {
     open my $fh, ">", $diamond_query_fa
         or die "Cannot write $diamond_query_fa: $!\n";
@@ -493,7 +504,7 @@ my $diamond_query_fa = "${out}_merged_proteins_clean.fa";
 # ---------------------------------------------------------------------------
 print "\nSTEP D: Translating source proteins (gffread)...\n";
 
-my $source_prot_fa = "${out}_source_proteins.fa";
+my $source_prot_fa = "$scratch_dir/source_proteins.fa";
 run_cmd("$gffread_bin $orig_gff -g $genome_fa -y $source_prot_fa >> $gffread_log 2>&1",
         "gffread translate original GFF");
 
@@ -518,7 +529,7 @@ printf "  Source proteins extracted: %d / %d\n",
 print "\nSTEP E: Diamond database...\n";
 
 unless (defined $diamond_db) {
-    $diamond_db = "${out}_ref.dmnd";
+    $diamond_db = "$scratch_dir/ref.dmnd";
 }
 unless (-f $diamond_db || -f "${diamond_db}.dmnd") {
     run_cmd("$diamond_bin makedb --in $ref_fa --db $diamond_db --quiet",
@@ -531,7 +542,7 @@ print "  Diamond db: $diamond_db\n";
 # ---------------------------------------------------------------------------
 print "\nSTEP F: Diamond blastp (merged proteins vs reference)...\n";
 
-my $diamond_out = "${out}_merged_vs_ref.tsv";
+my $diamond_out = "$scratch_dir/merged_vs_ref.tsv";
 run_cmd(
     "$diamond_bin blastp " .
     "--db $diamond_db " .
@@ -650,7 +661,8 @@ if (defined $swissprot_fa) {
 
     # Build/verify SwissProt diamond DB
     unless (defined $swissprot_db) {
-        $swissprot_db = "${out}_swissprot.dmnd";
+        # fall back: build in scratch dir (but normally passed via --swissprot_db from mender_db)
+        $swissprot_db = "$scratch_dir/swissprot.dmnd";
     }
     unless (-f $swissprot_db || -f "${swissprot_db}.dmnd") {
         run_cmd("$diamond_bin makedb --in $swissprot_fa --db $swissprot_db --quiet",
@@ -658,7 +670,7 @@ if (defined $swissprot_fa) {
     }
     print "  SwissProt db: $swissprot_db\n";
 
-    my $sprot_out = "${out}_merged_vs_swissprot.tsv";
+    my $sprot_out = "$scratch_dir/merged_vs_swissprot.tsv";
     run_cmd(
         "$diamond_bin blastp " .
         "--db $swissprot_db " .
@@ -761,8 +773,8 @@ if (defined $merge_table && -f $merge_table) {
 # ---------------------------------------------------------------------------
 # STEP J: MAFFT junction scoring
 # ---------------------------------------------------------------------------
-my $msa_dir    = "${out}_msa";
-my $kalign_log = "${out}_kalign.log";
+my $msa_dir    = "$scratch_dir/msa";
+my $kalign_log = "$scratch_dir/kalign.log";
 
 make_path($msa_dir) if $keep_msa && !$no_msa;
 
@@ -1111,7 +1123,7 @@ printf "  PASS:   %d\n  FAIL:   %d\n  REVIEW: %d\n",
 print "\nSTEP L: Writing outputs...\n";
 
 # --- K1: TSV report ---
-my $report_file = "${out}_report.tsv";
+my $report_file = "$out_dir/report.tsv";
 open my $rep, ">", $report_file or die "Cannot write $report_file: $!\n";
 print $rep join("\t",
     "merge_id",
@@ -1177,9 +1189,9 @@ close $rep;
 print "  Report:      $report_file\n";
 
 # --- K2: Split GFF3 outputs ---
-my $pass_gff   = "${out}_pass.gff3";
-my $fail_gff   = "${out}_fail.gff3";
-my $review_gff = "${out}_review.gff3";
+my $pass_gff   = "$out_dir/pass.gff3";
+my $fail_gff   = "$out_dir/fail.gff3";
+my $review_gff = "$out_dir/review.gff3";
 
 open my $pfh, ">", $pass_gff   or die "Cannot write $pass_gff: $!\n";
 open my $ffh, ">", $fail_gff   or die "Cannot write $fail_gff: $!\n";
@@ -1215,7 +1227,7 @@ printf "  Fail GFF:   %s  (%d genes)\n", $fail_gff,   $counts{FAIL};
 printf "  Review GFF: %s  (%d genes)\n", $review_gff, $counts{REVIEW};
 
 # --- K3: Pass proteins FASTA ---
-my $pass_prot_fa = "${out}_pass_proteins.fa";
+my $pass_prot_fa = "$out_dir/pass_proteins.fa";
 open my $ppfh, ">", $pass_prot_fa or die "Cannot write $pass_prot_fa: $!\n";
 for my $gid (sort keys %results) {
     next unless $results{$gid}{overall_result} eq "PASS";
