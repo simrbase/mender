@@ -344,6 +344,21 @@ still be a fragment of a larger gene — the reference-coverage threshold
 alone would not flag it. Both criteria are evaluated so that fragments of
 shorter proteins are not missed.
 
+```
+Reference protein (500 aa):
+1                                                500
+|--------------------------------------------------|
+
+Whole gene — aligns across most of its ortholog (scovhsp = 92%):
+ |===================WholeGene====================|
+ → not a fragment candidate (scovhsp > 85%)
+
+Split fragment — aligns to only the N-terminal half (scovhsp = 40%):
+ |=========GeneA=========|
+                          ← 60% of reference uncovered
+ → fragment candidate (scovhsp ≤ 85%)
+```
+
 **Tiling test.** For each pair of genomically adjacent fragment candidates
 (within `max_dist = 4` gene positions of each other on the same chromosome
 and on the same strand — opposite-strand pairs are discarded immediately),
@@ -397,6 +412,31 @@ gene B aligns to positions 205–480. Combined span = 480 − 10 + 1 = 471 aa.
 `combined_cov_pct` = 471/500 = 94.2%. Tiling gap = 205 − 200 = 5 aa
 (positive, within wiggle=15). This pair passes.
 
+```
+Reference protein (500 aa):
+1                                                500
+|--------------------------------------------------|
+
+GeneA aligns positions 10–200  (N-terminal fragment):
+ |=========GeneA=========|
+
+GeneB aligns positions 205–480  (C-terminal fragment):
+                           |========GeneB========|
+                          ^
+                    tiling gap = 5 aa  (positive, < wiggle=15) — PASSES
+
+Combined span: [10 ──────────────────────── 480] = 471/500 = 94.2%
+
+Too large a gap (gap = 40 aa, > wiggle=15) — FAILS:
+ |====GeneA====|                    |====GeneB====|
+               ←────── 40 aa ──────→
+
+Overlap too large (overlap = 20 aa, > wiggle=15) — FAILS:
+ |===========GeneA===========|
+               |========GeneB========|
+               ←── 20 aa overlap ───→
+```
+
 **num_tiling_hits.** For a pair to record a tiling hit against a given
 reference protein, both genes must independently have a fragment-level
 alignment against that same protein, and those alignments must tile. The
@@ -425,6 +465,19 @@ iteratively before the chain is written to the merge table. Use
 `--no_asym_trim` to disable this behaviour — useful when the reference
 proteome is phylogenetically distant and overall tiling hit counts are
 low.
+
+```
+Genome (5'→3'):   [═GeneA═] ─── [══GeneB══] ─── [GeneC]
+
+Tiling hits per junction (reference protein positions shown):
+  A→B: 8 hits  |=====A=====|=====B=====|           (strong)
+  B→C: 1 hit               |=====B=====|==C==|     (weak; max in chain = 8)
+                                               ↑
+                          B→C is weak terminal — GeneC trimmed from chain
+
+Result:   [═GeneA═] ─── [══GeneB══]   →  merge candidate
+          [GeneC]                       →  excluded; remains in annotation
+```
 
 **Quality flags.** Every candidate is annotated with one or more quality
 flags summarising the evidence (see flag table above). Flags are carried
@@ -466,6 +519,21 @@ possible:
   they should also reach a third if all three are truly one transcriptional
   unit — which is why `PARTIAL_SPAN` is informative even with incomplete
   libraries, but `none` is not.
+
+```
+Genome:     ──[═══GeneA═══]──────────────────[═══GeneB═══]──
+
+FULL_SPAN   ─────────────────────────────────────────────────→
+            one read spans both models — strong co-transcription support
+
+PARTIAL_SPAN ──────────────────────────→
+            reads cover GeneA but stop before reaching GeneB terminal
+            (terminal may be a mis-chained neighbour; fix_partial = yes trims it)
+
+NO_SPANNERS ──────────→         ──────────→
+            reads present but none span the full locus
+            (may reflect expression timing, not gene structure)
+```
 
 **Inputs:** `merge_candidates.txt` (step 4), `overlaps.txt` (step 3)  
 **Outputs:** `isoseq_validated.txt` — merge table with IsoSeq status column added
@@ -594,6 +662,25 @@ chosen because conservation and ref continuity are considered equally
 important signals of a structurally sound junction, while gap pattern —
 though informative — is treated as a supporting rather than primary
 criterion:
+
+```
+Merged:   ... D  A  F  K | S  M  L  R  W  T  G ...
+Ref-1:    ... D  A  F  K | S  M  L  R  W  T  G ...
+Ref-2:    ... D  A  F  K | T  M  L  R  W  T  G ...
+Ref-3:    ... D  A  F  K | S  M  L  R  W  T  G ...
+Src-A:    ... D  A  F  K | -  -  -  -  -  -  - ...   (N-terminal fragment ends)
+Src-B:    ... -  -  -  - | S  M  L  R  W  T  G ...   (C-terminal fragment begins)
+                          ↑
+                    junction column (merged aa 215)
+               |←── ±5 aa window ──→|
+
+Conservation  (×0.4): fraction of non-gap residues matching consensus per column,
+                       averaged across the window — measures residue agreement at junction
+Ref continuity(×0.4): fraction of reference sequences gap-free within ±3 aa of junction
+                       — measures whether junction falls in a coherent structural region
+Gap pattern   (×0.2): fraction of window columns where merged has gap but references do not
+                       — penalises a merged sequence that cannot join cleanly
+```
 
 - **Conservation** (weight 0.4) — at each column in the window, the
   fraction of non-gap characters that match the most common residue,
