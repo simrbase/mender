@@ -657,11 +657,12 @@ The junction is scored by examining a ±5 amino acid window of alignment
 columns centred on that column. Three sub-scores are computed and combined
 as a weighted sum (total = 0–1; default PASS threshold = 0.5). The weights
 must sum to exactly 1.0 (enforced at runtime) and are configurable via
-`--w_conservation`, `--w_continuity`, and `--w_gap`. The defaults were
-chosen because conservation and ref continuity are considered equally
-important signals of a structurally sound junction, while gap pattern —
-though informative — is treated as a supporting rather than primary
-criterion:
+`--w_conservation`, `--w_continuity`, and `--w_gap`. The defaults give the
+highest weight to the gap pattern metric because it is the most direct and
+principled measure of merge quality — it uses only the merged protein vs
+reference sequences and directly tests whether the merged protein can align
+without introducing gaps relative to the references. Conservation and ref
+continuity are weighted equally at 0.3 each:
 
 ```
 Merged:   ... D  A  F  K | S  M  L  R  W  T  G ...
@@ -674,39 +675,53 @@ Src-B:    ... -  -  -  - | S  M  L  R  W  T  G ...   (C-terminal fragment begins
                     junction column (merged aa 215)
                |←── ±5 aa window ──→|
 
-Conservation  (×0.4): fraction of non-gap residues matching consensus per column,
-                       averaged across the window — measures residue agreement at junction
-Ref continuity(×0.4): fraction of reference sequences gap-free within ±3 aa of junction
+Conservation  (×0.3): fraction of non-gap residues matching consensus per column,
+                       averaged across the window — computed over merged + refs only
+Ref continuity(×0.3): fraction of reference sequences gap-free within ±5 aa of junction
                        — measures whether junction falls in a coherent structural region
-Gap pattern   (×0.2): fraction of window columns where merged has gap but references do not
+Gap pattern   (×0.4): fraction of window columns where merged has gap but references do not
                        — penalises a merged sequence that cannot join cleanly
 ```
 
-- **Conservation** (weight 0.4) — at each column in the window, the
+- **Conservation** (weight 0.3) — at each column in the ±5 aa window, the
   fraction of non-gap characters that match the most common residue,
-  averaged across the window. A high score means all sequences — merged,
-  source fragments, and references — agree on similar residues at the
-  junction region. A bad merge shows up as disagreement: the residues
-  flanking the junction in the merged protein are inconsistent with what
-  the source fragments and references show at that position.
+  averaged across the window. Computed over the **merged protein and
+  reference sequences only**; source fragment proteins are excluded because
+  by construction Src-A is identical to the N-terminal half of the merged
+  protein and Src-B to the C-terminal half — including them would
+  artificially inflate the score. A high conservation score means the
+  merged protein matches the reference consensus at the junction; a bad
+  merge shows up as divergence from what the references show at that
+  position.
 
-- **Ref continuity** (weight 0.4) — the fraction of reference proteins
-  that are completely gap-free across the junction (±3 aa). A high score
-  means references flow through the junction without gaps, expected when
-  the junction falls in a conserved, structurally coherent region. A low
-  score means references also gap out at that position, which may indicate
-  a naturally variable region rather than a merge-induced break.
+- **Ref continuity** (weight 0.3) — the fraction of reference proteins
+  that are completely gap-free across the junction (±5 aa, same window as
+  the other metrics). A high score means references flow through the
+  junction without gaps, which is expected when the junction falls in a
+  conserved, structurally coherent region. A low score may indicate a
+  naturally variable region (e.g. a linker loop) rather than a
+  merge-induced break; this metric is most informative when the protein
+  family has multiple well-aligned references.
 
-- **Gap pattern** (weight 0.2) — penalises columns where the merged
-  protein has a gap but the reference sequences do not. This catches cases
-  where the two fragments do not join cleanly at the protein level: the
-  merged sequence must introduce gaps to align, revealing a discontinuity
-  at the junction that is absent from the references.
+- **Gap pattern** (weight 0.4) — penalises columns where the merged
+  protein has a gap but the reference sequences do not. This is the most
+  direct and principled of the three metrics because it uses only the
+  merged protein vs references (no source fragment involvement) and
+  directly tests whether the merged protein can align cleanly. A merged
+  protein that must introduce gaps to align reveals a discontinuity at the
+  junction that is absent from the references.
 
 For multi-fragment merges (A→B→C) each junction is scored independently;
 the minimum score across all junctions determines the overall
 PASS/REVIEW/FAIL classification. FAIL merges are replaced by their
 original source genes in the validated output GFF.
+
+When fewer than `min_msa_refs` reference sequences (default: 2) are
+available for the MSA, the merge is still scored but the `msa_flag` is
+set to `GOOD_MSA_LOW_REF` instead of `GOOD_MSA`, and a warning is written
+to the log. The PASS/FAIL/REVIEW outcome is unchanged — the flag lets
+you filter low-confidence calls in the TSV report when reference coverage
+of your gene family is sparse.
 
 **Key parameters:** `run_translation_validation`, `genome_fa`, `kalign_bin` / `mafft_bin`  
 **Inputs:** `new_merges.gff` (step 6), genome FASTA, reference proteome  
