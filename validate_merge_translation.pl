@@ -1131,9 +1131,9 @@ print $rep join("\t",
     "mean_junction_score",
     "msa_flag",
     "translation_flag",
-    "overall_result",
-    "fail_reasons",
     "source_flags",
+    "fail_reasons",
+    "overall_result",
 ), "\n";
 
 for my $gid (sort keys %merge_info) {
@@ -1168,9 +1168,9 @@ for my $gid (sort keys %merge_info) {
         $mean_js,
         $mflag,
         $res->{translation_flag},
-        $res->{overall_result},
-        $fail_str,
         $src_flag,
+        $fail_str,
+        $res->{overall_result},
     ), "\n";
 }
 close $rep;
