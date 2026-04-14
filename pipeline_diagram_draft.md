@@ -63,6 +63,7 @@ Box style legend:
 ║      reference hit — these look like partial gene models     ║
 ║                                                              ║
 ║  Tiling test                                                 ║
+║    · Same chromosome, same strand only                       ║
 ║    · Do two adjacent flagged fragments together span the     ║
 ║      same reference protein end-to-end?                      ║
 ║      (±15 aa tolerance in reference protein coordinates)     ║
@@ -341,8 +342,9 @@ alone would not flag it. Both criteria are evaluated so that fragments of
 shorter proteins are not missed.
 
 **Tiling test.** For each pair of genomically adjacent fragment candidates
-(within `max_dist = 4` gene positions of each other on the same
-chromosome), Mender checks whether their DIAMOND alignment coordinates on
+(within `max_dist = 4` gene positions of each other on the same chromosome
+and on the same strand — opposite-strand pairs are discarded immediately),
+Mender checks whether their DIAMOND alignment coordinates on
 the same reference protein are complementary. The key measure is
 `combined_cov_pct`: the span from the leftmost alignment start to the
 rightmost alignment end on the reference protein, divided by the reference
