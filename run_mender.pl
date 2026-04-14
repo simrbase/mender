@@ -142,6 +142,10 @@ my $tv_swissprot_fa = cfg("validation", "swissprot_fa",               "");
 my $tv_swissprot_db = cfg("validation", "swissprot_db",               "");
 my $tv_aligner      = cfg("validation", "aligner",                    "mafft_fast");
 my $tv_final_incl_review = cfg("validation", "final_gff_include_review", "yes");
+my $tv_w_conservation = cfg("validation", "w_conservation",           "0.3");
+my $tv_w_continuity   = cfg("validation", "w_continuity",             "0.3");
+my $tv_w_gap          = cfg("validation", "w_gap",                    "0.4");
+my $tv_min_msa_refs   = cfg("validation", "min_msa_refs",             "2");
 
 # paths
 my $scripts_dir  = cfg("paths", "scripts_dir",  "") || dirname(abs_path($0));
@@ -615,6 +619,10 @@ if ($run_steps{8}) {
         . ($tv_swissprot_fa ? " --swissprot_fa $tv_swissprot_fa" : "")
         . ($tv_swissprot_db ? " --swissprot_db $tv_swissprot_db" : "")
         . " --aligner $tv_aligner"
+        . " --w_conservation $tv_w_conservation"
+        . " --w_continuity $tv_w_continuity"
+        . " --w_gap $tv_w_gap"
+        . " --min_msa_refs $tv_min_msa_refs"
         . " --gffread_bin $gffread_bin"
         . " --diamond_bin $diamond_bin"
         . " --mafft_bin $mafft_bin"
@@ -894,6 +902,9 @@ if ($run_steps{9}) {
     $r->("  min_merged_cov:             $tv_min_mrgd_cov");
     $r->("  min_ref_cov:                $tv_min_ref_cov");
     $r->("  aligner:                    $tv_aligner");
+    $r->(sprintf "  w_conservation: %.2f  w_continuity: %.2f  w_gap: %.2f",
+        $tv_w_conservation, $tv_w_continuity, $tv_w_gap);
+    $r->("  min_msa_refs:               $tv_min_msa_refs");
     $r->("  no_msa:                     " . ($tv_no_msa =~ /^yes$/i ? "yes" : "no"));
     $r->("  keep_msa:                   " . ($tv_keep_msa =~ /^yes$/i ? "yes" : "no"));
     $r->("  swissprot_fa:               " . ($tv_swissprot_fa || "(not set — using ref_fa)"));

@@ -353,6 +353,33 @@ no_msa = no
 ##                 when speed matters more than fine-grained junction scoring.
 aligner = mafft_fast
 
+## MSA junction scoring weights.
+## Three sub-scores are combined into a single junction score (range 0–1):
+##   w_conservation — fraction of positions in the ±5 aa window where the merged
+##                    protein and reference sequences agree on the majority residue.
+##                    Computed over merged + refs only (source fragments excluded).
+##   w_continuity   — fraction of reference sequences that are completely gap-free
+##                    across the ±5 aa junction window.  Measures whether the junction
+##                    falls in a well-conserved region of the protein family.
+##   w_gap          — fraction of window columns where the merged protein does NOT
+##                    introduce a gap relative to reference sequences.  The most
+##                    direct measure of merge-introduced alignment disruption.
+##
+## Weights must sum to exactly 1.0.  The defaults give equal weight to
+## conservation and continuity and slightly more to the gap penalty, which is
+## the most principled of the three metrics.
+w_conservation = 0.3
+w_continuity   = 0.3
+w_gap          = 0.4
+
+## min_msa_refs: minimum number of reference sequences required in the MSA for
+## the junction score to be considered fully reliable.  When fewer refs are
+## available, the merge is still scored but flagged GOOD_MSA_LOW_REF (instead of
+## GOOD_MSA) and a warning is written to STDERR.  The PASS/FAIL/REVIEW outcome
+## is unchanged — the flag lets you filter low-confidence calls in the TSV.
+## Set to 1 to suppress warnings for single-reference alignments.
+min_msa_refs = 2
+
 ## keep_msa: yes/no — write per-merge alignment files to <transl_out_prefix>_msa/.
 ## Useful for inspecting individual junction alignments. Disk-intensive on large runs.
 keep_msa = no

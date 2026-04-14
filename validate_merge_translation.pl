@@ -51,9 +51,10 @@ use warnings;
 ##   --min_ref_cov F      Min ref protein coverage by merged protein (default: 0.50)
 ##   --max_msa_refs N     Max ref hits to include per MSA (default: 3)
 ##   --keep_msa           Write per-merge MSA files to <out>_msa/
-##   --w_conservation F   Weight for conservation sub-score (default: 0.4)
-##   --w_continuity F     Weight for ref continuity sub-score (default: 0.4)
-##   --w_gap F            Weight for gap pattern sub-score (default: 0.2)
+##   --w_conservation F   Weight for conservation sub-score (default: 0.3)
+##   --w_continuity F     Weight for ref continuity sub-score (default: 0.3)
+##   --w_gap F            Weight for gap pattern sub-score (default: 0.4)
+##   --min_msa_refs N     Min refs in MSA for full-confidence flag (default: 2)
 ##   --gffread_bin PATH   Path to gffread (default: gffread in PATH)
 ##   --diamond_bin PATH   Path to diamond (default: diamond in PATH)
 ##   --mafft_bin PATH     Path to mafft (default: mafft in PATH)
@@ -102,10 +103,11 @@ my $min_merged_cov = 0.60;
 my $min_ref_cov    = 0.50;
 my $max_msa_refs   = 3;
 my $keep_msa       = 0;
-my $w_conservation = 0.4;
-my $w_continuity   = 0.4;
-my $w_gap          = 0.2;
+my $w_conservation = 0.3;
+my $w_continuity   = 0.3;
+my $w_gap          = 0.4;
 my $junction_window = 5;
+my $min_msa_refs   = 2;   # warn + flag GOOD_MSA_LOW_REF when fewer refs in MSA
 my $gffread_bin    = "gffread";
 my $diamond_bin    = "diamond";
 my $mafft_bin      = "mafft";
@@ -134,6 +136,7 @@ GetOptions(
     "w_conservation=f"  => \$w_conservation,
     "w_continuity=f"    => \$w_continuity,
     "w_gap=f"           => \$w_gap,
+    "min_msa_refs=i"    => \$min_msa_refs,
     "gffread_bin=s"     => \$gffread_bin,
     "diamond_bin=s"     => \$diamond_bin,
     "mafft_bin=s"       => \$mafft_bin,
@@ -183,6 +186,9 @@ printf "aligner:        %s\n", ($no_msa ? "n/a" : $aligner);
 printf "min_junction:   %.2f\n", $min_junction;
 printf "min_merged_cov: %.2f\n", $min_merged_cov;
 printf "min_ref_cov:    %.2f\n", $min_ref_cov;
+printf "w_conservation: %.2f  w_continuity: %.2f  w_gap: %.2f\n",
+    $w_conservation, $w_continuity, $w_gap;
+printf "min_msa_refs:   %d\n", $min_msa_refs;
 printf "threads:        %d\n",   $threads;
 print "-" x 60, "\n";
 
@@ -930,15 +936,23 @@ for my $gid (@merge_ids_sorted) {
 
     $junction_scores{$gid} = \@scores;
 
+    # Warn when the MSA has fewer reference sequences than the minimum; scores
+    # are less reliable with sparse reference support.
+    if ($n_refs_added < $min_msa_refs) {
+        print STDERR "WARN: $merge_id scored with only $n_refs_added reference sequence(s)"
+                   . " (min_msa_refs=$min_msa_refs) — junction score is low-confidence\n";
+    }
+
     # Assign msa_flag
     if (!@scores) {
         # No scoreable junctions (e.g., single-gene source with degenerate input)
-        $msa_flag{$gid} = $n_refs_added > 0 ? "WEAK_JUNCTION" : "WEAK_JUNCTION";
+        $msa_flag{$gid} = "WEAK_JUNCTION";
     } else {
         my $min_score = min(@scores);
-        # GOOD_MSA: min junction score meets threshold AND no internal stop
+        # GOOD_MSA: min junction score meets threshold AND no internal stop.
+        # GOOD_MSA_LOW_REF: same, but flagged as low-confidence due to sparse refs.
         if ($min_score >= $min_junction && !$has_internal_stop{$gid}) {
-            $msa_flag{$gid} = "GOOD_MSA";
+            $msa_flag{$gid} = $n_refs_added < $min_msa_refs ? "GOOD_MSA_LOW_REF" : "GOOD_MSA";
         } else {
             $msa_flag{$gid} = "WEAK_JUNCTION";
         }
@@ -961,13 +975,17 @@ sub score_junction {
     my $col_end   = min($aln_len - 1, $junc_col + $window);
     my $n_cols    = $col_end - $col_start + 1;
 
-    my @all_ids = @$aln_order;
     my @ref_ids = @$ref_ids;
+
+    # Conservation uses merged + refs only; source fragments are excluded because
+    # they are identical to the corresponding halves of the merged protein by
+    # construction and would artificially inflate the consensus score.
+    my @cons_ids = ($merged_id, @ref_ids);
 
     # --- Conservation score ---
     my ($con_sum, $con_cols) = (0, 0);
     for my $col ($col_start .. $col_end) {
-        my @chars = map { substr($aln_seqs->{$_}, $col, 1) } @all_ids;
+        my @chars = map { substr($aln_seqs->{$_}, $col, 1) } @cons_ids;
         my @non_gap = grep { $_ ne '-' && $_ ne '.' } @chars;
         next unless @non_gap;
         my %cnt;
@@ -995,15 +1013,14 @@ sub score_junction {
     my $gap_pattern = $valid_cols > 0 ? 1 - ($merged_gap_cols / $valid_cols) : 0.5;
 
     # --- Ref continuity score ---
-    # Fraction of REF sequences gapless across junc_col ± 3
+    # Fraction of REF sequences gapless across junc_col ± window (same window
+    # as conservation and gap pattern — previously used ±3, now unified to ±window).
     my $ref_continuity;
     if (@ref_ids) {
-        my $cont_start = max(0, $junc_col - 3);
-        my $cont_end   = min($aln_len - 1, $junc_col + 3);
         my $gapless_refs = 0;
         for my $rid (@ref_ids) {
             my $gapless = 1;
-            for my $col ($cont_start .. $cont_end) {
+            for my $col ($col_start .. $col_end) {
                 my $c = substr($aln_seqs->{$rid}, $col, 1);
                 if ($c eq '-' || $c eq '.') { $gapless = 0; last; }
             }
@@ -1050,7 +1067,7 @@ for my $gid (keys %merge_info) {
     } elsif ($transl_flag eq "OK"
           && $mrgd_cov >= $min_merged_cov
           && $ref_cov  >= $min_ref_cov
-          && ($mflag eq "GOOD_MSA" || $no_msa)) {
+          && ($mflag eq "GOOD_MSA" || $mflag eq "GOOD_MSA_LOW_REF" || $no_msa)) {
         $result = "PASS";
     } else {
         $result = "REVIEW";
