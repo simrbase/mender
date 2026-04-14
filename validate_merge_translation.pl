@@ -788,7 +788,7 @@ my $mafft_total = scalar @merge_ids_sorted;
 for my $gid (@merge_ids_sorted) {
     $mafft_done++;
     if ($mafft_done == 1 || $mafft_done % 50 == 0 || $mafft_done == $mafft_total) {
-        printf "  MAFFT: %d / %d (%.0f%%)\n",
+        printf "  MSA: %d / %d (%.0f%%)\n",
             $mafft_done, $mafft_total, 100 * $mafft_done / $mafft_total;
     }
     my @src_genes   = @{ $merge_info{$gid}{source_genes} };
@@ -824,7 +824,7 @@ for my $gid (@merge_ids_sorted) {
         $junction_scores{$gid} = [];
         next;
     }
-    # Clean for MAFFT: remove internal stops, replace N-codon dots with X
+    # Clean for MSA: remove internal stops, replace N-codon dots with X
     (my $clean_merged = $merged_prot{$gid}) =~ s/\*//g;
     $clean_merged =~ tr/./X/;
     push @fasta_entries, [$merged_label, $clean_merged];
@@ -953,8 +953,14 @@ for my $gid (@merge_ids_sorted) {
     # Warn when the MSA has fewer reference sequences than the minimum; scores
     # are less reliable with sparse reference support.
     if ($n_refs_added < $min_msa_refs) {
-        print STDERR "WARN: $merge_id scored with only $n_refs_added reference sequence(s)"
-                   . " (min_msa_refs=$min_msa_refs) — junction score is low-confidence\n";
+        my $warn = "WARN: $merge_id scored with only $n_refs_added reference sequence(s)"
+                 . " (min_msa_refs=$min_msa_refs) — junction score is low-confidence\n";
+        print STDERR $warn;
+        if ($kalign_log) {
+            open(my $fh, ">>", $kalign_log) or die "Cannot open $kalign_log: $!";
+            print $fh $warn;
+            close $fh;
+        }
     }
 
     # Assign msa_flag
