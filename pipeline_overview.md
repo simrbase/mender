@@ -392,7 +392,7 @@ may be an additional split fragment that failed filters, an unrelated gene,
 or an artifact — the `skipped_genes` column in the merge table records its
 ID for manual inspection. `SKIPPED_GENE` candidates are recommended for
 `skip_flags` and manual review before merging.
-the same reference protein are complementary. The key measure is
+The key measure is
 `combined_cov_pct`: the span from the leftmost alignment start to the
 rightmost alignment end on the reference protein, divided by the reference
 protein length. This is a span measure, not the sum of individual

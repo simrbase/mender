@@ -15,6 +15,170 @@ a `merged_from` attribute listing the source gene IDs.
 For an annotated pipeline diagram with per-step descriptions, see
 [pipeline_overview.md](pipeline_overview.md).
 
+For a worked example comparing reference proteome choices and a recommended
+two-pass strategy, see
+[case_study_reference_comparison.md](case_study_reference_comparison.md).
+
+---
+
+## Contents
+
+- [Quick Start](#quick-start)
+- [Dependencies](#dependencies)
+- [Choosing a Reference Proteome](#choosing-a-reference-proteome)
+- [Pipeline Steps](#pipeline-steps)
+- [How the Protein Homology Analysis Works](#how-the-protein-homology-analysis-works)
+- [Scripts](#scripts)
+- [Output File Column Reference](#output-file-column-reference)
+- [Flag Definitions](#flag-definitions)
+- [New Gene ID Templates](#new-gene-id-templates)
+- [Without IsoSeq](#without-isoseq)
+
+---
+
+## Quick Start
+
+```bash
+# Copy the example config and customize it for your project
+cp mender.cfg.example myproject.cfg
+# edit myproject.cfg — set input GFF, proteome FA, subject FA, and optionally isoseq_gff
+
+# Run the full pipeline
+perl run_mender.pl --config myproject.cfg
+
+# Dry run — preview what would be merged without writing files
+perl run_mender.pl --config myproject.cfg --dry_run
+
+# Run specific steps only
+perl run_mender.pl --config myproject.cfg --steps 4,6
+```
+
+`mender.cfg.example` is a fully annotated template — all options are documented
+there. Do not edit it directly; copy it to a project-specific name first.
+
+---
+
+## Dependencies
+
+| Tool | Purpose | Required? |
+|------|---------|-----------|
+| `perl` | Run all scripts | yes |
+| `diamond` | blastp of query proteome vs reference | yes |
+| `bedtools` | IsoSeq read–gene overlap | only if `isoseq_gff` is set |
+| `gffread` | Translate merged and source CDS (Step 8) | only if translation validation is on |
+| `mafft` | Multiple sequence alignment for junction scoring (Step 8) | only if translation validation is on, `no_msa = no`, and `aligner = mafft_fast` or `mafft_auto` |
+| `kalign3` | Alternative MSA aligner (faster than MAFFT; recommended) | only if translation validation is on, `no_msa = no`, and `aligner = kalign3` |
+| `gt` (GenomeTools) | GFF3 spec validation of merged genes (Step 7) | optional |
+| `agat` | Biological GFF consistency check of passing merges (Step 9) | optional |
+
+All tools are expected to be in `$PATH` unless explicit paths are set in the
+config file.
+
+```bash
+# Install the tools you need via conda (customize this list for your run)
+conda install -c bioconda diamond bedtools gffread mafft genometools-genometools agat perl
+```
+
+---
+
+## Choosing a Reference Proteome
+
+The reference proteome (the `subject_fa` input) is the database against which
+your query proteins are searched. Its quality and relevance directly determine
+how many split genes Mender can detect and how many false positives it will
+produce. The ideal reference is both closely related to your organism and
+well-annotated. These goals are sometimes in tension.
+
+### Key criteria
+
+**Completeness.** Prefer proteomes with high BUSCO vertebrata scores (>90%).
+A gene absent from the reference creates a blind spot — split fragments whose
+true ortholog is missing cannot be detected.
+
+**Annotation quality.** RefSeq and Ensembl annotations are more reliable than
+automated genome-only predictions. Avoid using as a reference a proteome that
+was produced by the same gene caller you are trying to fix — you may inherit
+the same split-gene artifacts you are trying to correct.
+
+**Phylogenetic distance.** Closer is better for blast sensitivity and tiling
+hit counts, but too close risks inheriting the same annotation errors. The
+working rule: use the closest *well-annotated* species available, not the
+closest *sequenced* species.
+
+**Isoform representation.** Reference proteomes that include multiple isoforms
+per gene (Ensembl typically does) produce higher `num_tiling_hits` for
+multi-copy and multi-isoform gene families, because more reference sequences
+can independently confirm the same tiling pattern. Proteomes filtered to one
+canonical sequence per gene give more comparable hit counts across gene
+families but reduce total sensitivity. Choose based on whether you prioritize
+comparability (filtered) or maximum sensitivity (all isoforms).
+
+### Finding a reference for your organism
+
+RefSeq and Ensembl are the primary sources for curated proteomes across most
+taxa. Both provide BUSCO completeness scores for their annotated assemblies,
+which is the most direct way to compare candidates: a proteome with a high
+BUSCO vertebrata (or metazoa, or embryophyta, depending on your clade) score
+is more complete and will produce more tiling hits than a lower-scoring one.
+
+Search NCBI Datasets or Ensembl for annotated assemblies in the same order or
+class as your target organism. Download the protein FASTA for the best-scoring
+candidate. If no closely related species has a high-quality annotation, a more
+distant but well-annotated relative is preferable to a close but poorly
+annotated one — a fragmented or error-prone reference proteome will introduce
+false split-gene candidates and suppress real ones.
+
+For organisms with no well-annotated relative at all (early-diverging lineages,
+poorly studied phyla), a broad-coverage reference such as a curated set of
+orthologs from OrthoDB or a UniProt/SwissProt subset filtered to your clade
+can serve as a fallback, with the understanding that `num_tiling_hits` will be
+lower throughout.
+
+---
+
+## Pipeline Steps
+
+These are the **numbered steps** controlled by `--steps` in `run_mender.pl`.
+Use `--steps 4,6` to run only specific steps, or omit `--steps` to run all.
+
+| Step | Name | Script / Tool | Description |
+|------|------|---------------|-------------|
+| 1 | prepare | run_mender.pl | Clean protein FASTA (remove internal stops), extract GFF subsets |
+| 2 | diamond | `diamond blastp` | Query proteome vs reference proteome |
+| 3 | bedtools | `bedtools intersect` | IsoSeq reads vs gene models — skipped if no `isoseq_gff` |
+| 4 | find | `find_split_genes.pl` | Identify split gene candidates from diamond output |
+| 5 | isoseq | `validate_merge_with_isoseq.pl` | Add IsoSeq spanning read evidence — skipped if no `isoseq_gff` |
+| 6 | merge | `merge_split_genes.pl` | Apply merges to the GFF; write new merged genes |
+| 7 | gt | `gt gff3validator` | Fast GFF3 spec check on new Mender genes only; non-fatal |
+| 8 | transl | `validate_merge_translation.pl` | Translate merged proteins, score junctions, assign PASS/FAIL/REVIEW |
+| 9 | agat | `agat_convert_sp_gxf2gxf.pl` | Gene-model check on PASS GFF only; slow, optional |
+
+Steps 3 and 5 are automatically skipped when `isoseq_gff` is not set.
+Step 8 is skipped when `run_translation_validation = no` in config.
+Step 9 is skipped when `run_agat = no` in config.
+
+### Step 8 internal sub-steps (A–L)
+
+Step 8 (`validate_merge_translation.pl`) runs its own internal sequence of
+lettered steps. These are **not individually selectable** via `--steps` — they
+always run in order as part of step 8. Use `--no_msa` or `run_translation_validation = no`
+to control the scope of step 8 from the config.
+
+| Sub-step | Description |
+|----------|-------------|
+| A | Parse merged GFF — collect new gene IDs, source gene lists, GFF blocks |
+| B | Parse original GFF — get representative transcript and CDS length per source gene |
+| C | Translate merged proteins (gffread); write clean FASTA for diamond |
+| D | Translate source gene proteins (gffread) |
+| E | Build or verify diamond database from ref_fa |
+| F | Diamond blastp merged proteins vs reference proteome; compute coverage metrics |
+| G | Load reference proteome sequences into memory |
+| H | SwissProt diamond blast (if configured); load hit sequences for MSA |
+| I | Load merge table for flag annotations |
+| J | MSA junction scoring — align merged + source + SwissProt ref (+ best ref_fa hit) proteins; score each junction. Aligner set via `aligner` config (kalign3 recommended). |
+| K | Assign PASS / FAIL / REVIEW per merge; write `transl_result`, `msa_flag`, `min_junction_score` into GFF attributes |
+| L | Write outputs into `--out` directory: `report.tsv`, `pass.gff3`, `fail.gff3`, `review.gff3`, `pass_proteins.fa` |
+
 ---
 
 ## How the Protein Homology Analysis Works
@@ -240,153 +404,6 @@ the config, or via command line options to `merge_split_genes.pl`.
 
 ---
 
-## Dependencies
-
-| Tool | Purpose | Required? |
-|------|---------|-----------|
-| `perl` | Run all scripts | yes |
-| `diamond` | blastp of query proteome vs reference | yes |
-| `bedtools` | IsoSeq read–gene overlap | only if `isoseq_gff` is set |
-| `gffread` | Translate merged and source CDS (Step 8) | only if translation validation is on |
-| `mafft` | Multiple sequence alignment for junction scoring (Step 8) | only if translation validation is on, `no_msa = no`, and `aligner = mafft_fast` or `mafft_auto` |
-| `kalign3` | Alternative MSA aligner (faster than MAFFT; recommended) | only if translation validation is on, `no_msa = no`, and `aligner = kalign3` |
-| `gt` (GenomeTools) | GFF3 spec validation of merged genes (Step 7) | optional |
-| `agat` | Biological GFF consistency check of passing merges (Step 9) | optional |
-
-All tools are expected to be in `$PATH` unless explicit paths are set in the
-config file.
-
-Install only what you need:
-
-```bash
-# Install the tools you need via conda (customize this list for your run)
-conda install -c bioconda diamond bedtools gffread mafft genometools-genometools agat perl
-```
-
----
-
-## Choosing a Reference Proteome
-
-The reference proteome (the `subject_fa` input) is the database against which
-your query proteins are searched. Its quality and relevance directly determine
-how many split genes Mender can detect and how many false positives it will
-produce. The ideal reference is both closely related to your organism and
-well-annotated. These goals are sometimes in tension.
-
-### Key criteria
-
-**Completeness.** Prefer proteomes with high BUSCO vertebrata scores (>90%).
-A gene absent from the reference creates a blind spot — split fragments whose
-true ortholog is missing cannot be detected.
-
-**Annotation quality.** RefSeq and Ensembl annotations are more reliable than
-automated genome-only predictions. Avoid using as a reference a proteome that
-was produced by the same gene caller you are trying to fix — you may inherit
-the same split-gene artifacts you are trying to correct.
-
-**Phylogenetic distance.** Closer is better for blast sensitivity and tiling
-hit counts, but too close risks inheriting the same annotation errors. The
-working rule: use the closest *well-annotated* species available, not the
-closest *sequenced* species.
-
-**Isoform representation.** Reference proteomes that include multiple isoforms
-per gene (Ensembl typically does) produce higher `num_tiling_hits` for
-multi-copy and multi-isoform gene families, because more reference sequences
-can independently confirm the same tiling pattern. Proteomes filtered to one
-canonical sequence per gene give more comparable hit counts across gene
-families but reduce total sensitivity. Choose based on whether you prioritize
-comparability (filtered) or maximum sensitivity (all isoforms).
-
-### Finding a reference for your organism
-
-RefSeq and Ensembl are the primary sources for curated proteomes across most
-taxa. Both provide BUSCO completeness scores for their annotated assemblies,
-which is the most direct way to compare candidates: a proteome with a high
-BUSCO vertebrata (or metazoa, or embryophyta, depending on your clade) score
-is more complete and will produce more tiling hits than a lower-scoring one.
-
-Search NCBI Datasets or Ensembl for annotated assemblies in the same order or
-class as your target organism. Download the protein FASTA for the best-scoring
-candidate. If no closely related species has a high-quality annotation, a more
-distant but well-annotated relative is preferable to a close but poorly
-annotated one — a fragmented or error-prone reference proteome will introduce
-false split-gene candidates and suppress real ones.
-
-For organisms with no well-annotated relative at all (early-diverging lineages,
-poorly studied phyla), a broad-coverage reference such as a curated set of
-orthologs from OrthoDB or a UniProt/SwissProt subset filtered to your clade
-can serve as a fallback, with the understanding that `num_tiling_hits` will be
-lower throughout.
-
----
-
-## Quick Start
-
-```bash
-# Copy the example config and customize it for your project
-cp mender.cfg.example myproject.cfg
-# edit myproject.cfg — set input GFF, proteome FA, subject FA, and optionally isoseq_gff
-
-# Run the full pipeline
-perl run_mender.pl --config myproject.cfg
-
-# Dry run — preview what would be merged without writing files
-perl run_mender.pl --config myproject.cfg --dry_run
-
-# Run specific steps only
-perl run_mender.pl --config myproject.cfg --steps 4,6
-```
-
-`mender.cfg.example` is a fully annotated template — all options are documented
-there. Do not edit it directly; copy it to a project-specific name first.
-
----
-
-## Pipeline Steps
-
-These are the **numbered steps** controlled by `--steps` in `run_mender.pl`.
-Use `--steps 4,6` to run only specific steps, or omit `--steps` to run all.
-
-| Step | Name | Script / Tool | Description |
-|------|------|---------------|-------------|
-| 1 | prepare | run_mender.pl | Clean protein FASTA (remove internal stops), extract GFF subsets |
-| 2 | diamond | `diamond blastp` | Query proteome vs reference proteome |
-| 3 | bedtools | `bedtools intersect` | IsoSeq reads vs gene models — skipped if no `isoseq_gff` |
-| 4 | find | `find_split_genes.pl` | Identify split gene candidates from diamond output |
-| 5 | isoseq | `validate_merge_with_isoseq.pl` | Add IsoSeq spanning read evidence — skipped if no `isoseq_gff` |
-| 6 | merge | `merge_split_genes.pl` | Apply merges to the GFF; write new merged genes |
-| 7 | gt | `gt gff3validator` | Fast GFF3 spec check on new Mender genes only; non-fatal |
-| 8 | transl | `validate_merge_translation.pl` | Translate merged proteins, score junctions, assign PASS/FAIL/REVIEW |
-| 9 | agat | `agat_convert_sp_gxf2gxf.pl` | Gene-model check on PASS GFF only; slow, optional |
-
-Steps 3 and 5 are automatically skipped when `isoseq_gff` is not set.
-Step 8 is skipped when `run_translation_validation = no` in config.
-Step 9 is skipped when `run_agat = no` in config.
-
-### Step 8 internal sub-steps (A–L)
-
-Step 8 (`validate_merge_translation.pl`) runs its own internal sequence of
-lettered steps. These are **not individually selectable** via `--steps` — they
-always run in order as part of step 8. Use `--no_msa` or `run_translation_validation = no`
-to control the scope of step 8 from the config.
-
-| Sub-step | Description |
-|----------|-------------|
-| A | Parse merged GFF — collect new gene IDs, source gene lists, GFF blocks |
-| B | Parse original GFF — get representative transcript and CDS length per source gene |
-| C | Translate merged proteins (gffread); write clean FASTA for diamond |
-| D | Translate source gene proteins (gffread) |
-| E | Build or verify diamond database from ref_fa |
-| F | Diamond blastp merged proteins vs reference proteome; compute coverage metrics |
-| G | Load reference proteome sequences into memory |
-| H | SwissProt diamond blast (if configured); load hit sequences for MSA |
-| I | Load merge table for flag annotations |
-| J | MSA junction scoring — align merged + source + SwissProt ref (+ best ref_fa hit) proteins; score each junction. Aligner set via `aligner` config (kalign3 recommended). |
-| K | Assign PASS / FAIL / REVIEW per merge; write `transl_result`, `msa_flag`, `min_junction_score` into GFF attributes |
-| L | Write outputs into `--out` directory: `report.tsv`, `pass.gff3`, `fail.gff3`, `review.gff3`, `pass_proteins.fa` |
-
----
-
 ## Scripts
 
 ### `run_mender.pl`
@@ -523,9 +540,7 @@ Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
 
 ## Flag Definitions
 
-### Protein evidence flags (column 17)
-
-**Evidence strength flags** (apply to all chain sizes):
+### Protein evidence flags (step 4 output, column 17 of merge table)
 
 | Flag | Meaning |
 |------|---------|
@@ -535,11 +550,6 @@ Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
 | `WEAK_END` | Terminal junction has 1–2 hits but survived trimming |
 | `WEAK_INTERNAL` | Internal junction has 1–2 hits but survived splitting |
 | `LOW_COV` | Combined coverage <60% — likely domain sharing, not a split gene |
-
-**Structural concern flags** (apply to all chain sizes):
-
-| Flag | Meaning |
-|------|---------|
 | `SKIPPED_GENE` | A non-adjacent gene sits inside the merge locus — check `skipped_genes` column and GFF before merging |
 | `TRANSITIVE_JOIN` | One or more consecutive gene pairs in the chain have no direct pairwise tiling evidence; connection is inferred transitively through other genes. `STRONG,TRANSITIVE_JOIN` warrants the same scrutiny as `WEAK_END`. `SINGLE_HIT,TRANSITIVE_JOIN` without IsoSeq is the highest-risk category. |
 | `MULTI_ISOFORM_JOIN` | At least one source gene has >1 transcript; merged gene will contain cross-product isoform combinations. Verify isoform structure before using isoform-level annotations. |
@@ -547,13 +557,14 @@ Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
 | `LARGE_SPAN_EXTREME` | Merged locus span exceeds `large_span_extreme` (default 2 Mb). Recommend adding to `skip_flags` unless IsoSeq confirms. |
 
 ### IsoSeq flags (column 20 of `isoseq_validated.txt`)
+
 | Flag | Meaning |
 |------|---------|
 | `FULL_SPAN` | At least one read spans all genes — strong confirmation |
 | `PARTIAL_SPAN` | Reads exist but none reach a terminal gene — structural signal that a terminal gene may not belong. Use `--fix_partial` to auto-trim. |
 | `NO_SPANNERS` | No spanning reads found — may reflect expression stage, not gene structure. Not a negative result. |
 
-### Translation validation flags (`report.tsv` columns 16–17, 19–20)
+### Translation validation flags (`report.tsv`)
 
 **`translation_flag` (column 17):**
 
@@ -633,15 +644,3 @@ perl merge_split_genes.pl \
     --skip_flags SKIPPED_GENE,LOW_COV \
     merge_candidates.txt input.gff output.gff
 ```
-
----
-
-## Examples
-
-The `examples/` directory contains files from the *Chamaeleo calyptratus*
-CCA3 genome annotation run (April 2026):
-
-- `chacal.cfg` — project config used for the CCA3 run
-- `pipeline_summary.txt` — full results summary and manual review notes
-- `isoseq_validated.txt` — merge table with IsoSeq evidence (1067 candidates)
-- `new_merges.log` — run log from `merge_split_genes.pl`
