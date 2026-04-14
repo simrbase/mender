@@ -1160,7 +1160,7 @@ sub compute_flags {
 # ---------------------------------------------------------------------------
 # Write merge table — apply trimming/splitting before writing each chain
 # ---------------------------------------------------------------------------
-open MERGE, ">split_genes_merge.txt" or die "cant open merge output $!\n";
+open MERGE, ">split_genes_merge.txt" or die "cant open merge output $!\n";  # renamed to merge_candidates.txt by run_mender.pl
 print MERGE join("\t",
     "merge_id",
     "num_genes",

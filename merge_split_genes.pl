@@ -29,10 +29,10 @@ use warnings;
 ##   and starts the counter above that.
 ##
 ## Usage:
-##   perl merge_split_genes.pl [options] validated_merge.txt input.gff output.gff
+##   perl merge_split_genes.pl [options] isoseq_validated.txt input.gff output.gff
 ##
 ## Arguments:
-##   validated_merge.txt  output of validate_with_isoseq.pl (or split_genes_merge.txt)
+##   isoseq_validated.txt  output of validate_with_isoseq.pl (or merge_candidates.txt)
 ##   input.gff            full GFF3 annotation (must be parent-before-child sorted)
 ##   output.gff           name for the new merged GFF3 output file
 ##
@@ -120,7 +120,7 @@ use warnings;
 ##                        strongly recommended to add to skip_flags unless IsoSeq confirms
 ##   CLEAN                2+ tiling hits, coverage >= 60%, directly adjacent — no concerns flagged
 ##
-## --isoseq_flag values (for reference, used in validated_merge.txt col 20):
+## --isoseq_flag values (for reference, used in isoseq_validated.txt col 20):
 ##   FULL_SPAN       at least one read spans all genes — strong confirmation
 ##   PARTIAL_SPAN    reads exist but don't reach a terminal gene — handled by --fix_partial
 ##   none            no spanning reads — may reflect expression stage not gene structure
@@ -168,7 +168,7 @@ use warnings;
 ##
 ##   perl merge_split_genes.pl --fix_partial --skip_flags SKIPPED_GENE,LOW_COV \
 ##       --dry_run \
-##       validated_merge.txt \
+##       isoseq_validated.txt \
 ##       input.gff \
 ##       output.gff
 ##
@@ -180,7 +180,7 @@ use warnings;
 ##       --skip_flags SKIPPED_GENE,LOW_COV \
 ##       --gene_template  "CCA3g1[GCOUNT:6]000" \
 ##       --trans_template "CCA3t1[GCOUNT:6][TCOUNT:3]" \
-##       validated_merge.txt \
+##       isoseq_validated.txt \
 ##       input.gff \
 ##       output.gff
 ##
@@ -194,7 +194,7 @@ use warnings;
 ##       --isoseq_min_spanning 3 \
 ##       --gene_template  "CCA3g1[GCOUNT:6]000" \
 ##       --trans_template "CCA3t1[GCOUNT:6][TCOUNT:3]" \
-##       validated_merge.txt \
+##       isoseq_validated.txt \
 ##       input.gff \
 ##       output.gff
 ##
@@ -205,7 +205,7 @@ use warnings;
 ##       --skip_flags SKIPPED_GENE,LOW_COV \
 ##       --gene_template  "ACI1_HiC_scaffold_1_[GCOUNT:6]" \
 ##       --trans_template "ACI1_HiC_scaffold_1_[GCOUNT:6].[TCOUNT]" \
-##       split_genes_merge.txt \
+##       merge_candidates.txt \
 ##       input.gff \
 ##       output.gff
 ##
@@ -214,7 +214,7 @@ use warnings;
 ##   perl merge_split_genes.pl \
 ##       --fix_partial \
 ##       --skip_flags SKIPPED_GENE,LOW_COV \
-##       validated_merge.txt \
+##       isoseq_validated.txt \
 ##       input.gff \
 ##       output.gff
 ##
@@ -300,7 +300,7 @@ GetOptions(
     "trans_template=s"     => \$trans_template,
 ) or die "Error in options\n";
 
-my $usage = "usage: $0 [options] validated_merge.txt input.gff output.gff\n";
+my $usage = "usage: $0 [options] isoseq_validated.txt input.gff output.gff\n";
 my $merge_file  = shift or die $usage;
 my $gff_file    = shift or die $usage;
 my $output_file = shift;
@@ -421,7 +421,7 @@ print STDERR "Starting gene counter at:  ", build_gene_id($gene_tmpl, $gene_coun
 # Load merge table: collect merge groups to process
 # ---------------------------------------------------------------------------
 
-# column indices (0-based) for the validated_merge.txt
+# column indices (0-based) for the isoseq_validated.txt
 # works for both old (18-col) and new (20-col) format
 # we key on genes_in_order (col 2) and flag (col 14 old / col 16 new)
 # detect format from header

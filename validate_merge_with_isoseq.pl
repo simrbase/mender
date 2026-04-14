@@ -14,7 +14,7 @@ use warnings;
 ##   bedtools intersect -a isoseq.mrna.gff -b models.gene.gff -wa -wb | \
 ##       perl -p -e 's/.+\sID=([^;]+).+\sID=([^;]+).*$/$1\t$2/' > overlaps
 ##
-## Usage: perl validate_with_isoseq.pl split_genes_merge.txt overlaps > validated_merge.txt
+## Usage: perl validate_with_isoseq.pl merge_candidates.txt overlaps > isoseq_validated.txt
 ##
 ## Output columns (all columns from merge table plus):
 ##
@@ -68,7 +68,7 @@ use warnings;
 ##
 ##
 ## Note: validate_merge_with_isoseq.pl is optional. This script accepts either
-##   split_genes_merge.txt or validated_merge.txt as input — columns are
+##   merge_candidates.txt or isoseq_validated.txt as input — columns are
 ##   detected by header name. If IsoSeq columns are absent, options that
 ##   depend on them (--fix_partial, --require_isoseq, --isoseq_min_spanning)
 ##   are silently ignored and filtering falls back to protein evidence only.
@@ -78,13 +78,13 @@ use warnings;
 ##   perl merge_split_genes.pl \
 ##       --flags STRONG \
 ##       --skip_flags SKIPPED_GENE,LOW_COV \
-##       split_genes_merge.txt \
+##       merge_candidates.txt \
 ##       input.gff \
 ##       output.gff
 ##
 
-my $merge_file    = shift or die "usage: $0 split_genes_merge.txt overlaps\n";
-my $overlaps_file = shift or die "usage: $0 split_genes_merge.txt overlaps\n";
+my $merge_file    = shift or die "usage: $0 merge_candidates.txt overlaps\n";
+my $overlaps_file = shift or die "usage: $0 merge_candidates.txt overlaps\n";
 
 # ---------------------------------------------------------------------------
 # Load overlaps: isoseq_read -> {gene -> 1} and gene -> {isoseq_read -> 1}

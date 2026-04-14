@@ -245,24 +245,25 @@ pre-merge filters.
 
 ## Dependencies
 
-| Tool | Purpose |
-|------|---------|
-| `perl` | Run all scripts |
-| `diamond` | blastp of query proteome vs reference |
-| `bedtools` | IsoSeq read–gene overlap (optional) |
-| `gt` (GenomeTools) | GFF3 validation (optional) |
-| `agat` | Biological GFF consistency check (optional) |
+| Tool | Purpose | Required? |
+|------|---------|-----------|
+| `perl` | Run all scripts | yes |
+| `diamond` | blastp of query proteome vs reference | yes |
+| `bedtools` | IsoSeq read–gene overlap | only if `isoseq_gff` is set |
+| `gffread` | Translate merged and source CDS (Step 8) | only if translation validation is on |
+| `mafft` | Multiple sequence alignment for junction scoring (Step 8) | only if translation validation is on, `no_msa = no`, and `aligner = mafft_fast` or `mafft_auto` |
+| `kalign3` | Alternative MSA aligner (faster than MAFFT; recommended) | only if translation validation is on, `no_msa = no`, and `aligner = kalign3` |
+| `gt` (GenomeTools) | GFF3 spec validation of merged genes (Step 7) | optional |
+| `agat` | Biological GFF consistency check of passing merges (Step 9) | optional |
 
 All tools are expected to be in `$PATH` unless explicit paths are set in the
 config file.
 
-Install only what you need. For example, if you are not using IsoSeq you can
-skip `bedtools`; if you are skipping the validation step you can skip `gt` and
-`agat`.
+Install only what you need:
 
 ```bash
 # Install the tools you need via conda (customize this list for your run)
-conda install -c bioconda diamond bedtools genometools-genometools agat perl
+conda install -c bioconda diamond bedtools gffread mafft genometools-genometools agat perl
 ```
 
 ---
@@ -311,7 +312,7 @@ evidence than a single reference run:
   rather than genuine split-gene evidence.
 
 To implement this, run Steps 1–4 twice (once per reference proteome), then
-compare the two `split_genes_merge.txt` outputs by gene pair. A lightweight
+compare the two `merge_candidates.txt` outputs by gene pair. A lightweight
 post-processing script can produce a `consensus_merge_candidates.txt` with a
 `proteome_support = N/M` column indicating how many references supported each
 pair.
@@ -351,18 +352,46 @@ there. Do not edit it directly; copy it to a project-specific name first.
 
 ## Pipeline Steps
 
-| Step | Name | Description |
-|------|------|-------------|
-| 1 | prepare | Clean protein FASTA (remove internal stops), extract GFF subsets |
-| 2 | diamond | Run `diamond blastp` of query proteome vs reference proteome |
-| 3 | bedtools | `bedtools intersect` to find IsoSeq reads overlapping gene models (skipped if no `isoseq_gff`) |
-| 4 | find | `find_split_genes.pl` — identify split gene candidates from diamond output |
-| 5 | isoseq | `validate_merge_with_isoseq.pl` — add spanning read evidence to merge table (skipped if no `isoseq_gff`) |
-| 6 | merge | `merge_split_genes.pl` — apply merges to the GFF |
-| 7 | check | `gt gff3validator` and `agat` validation of output GFF |
+These are the **numbered steps** controlled by `--steps` in `run_mender.pl`.
+Use `--steps 4,6` to run only specific steps, or omit `--steps` to run all.
 
-Steps 3 and 5 are automatically skipped when `isoseq_gff` is not set in the
-config. In that case, step 6 uses protein evidence flags only.
+| Step | Name | Script / Tool | Description |
+|------|------|---------------|-------------|
+| 1 | prepare | run_mender.pl | Clean protein FASTA (remove internal stops), extract GFF subsets |
+| 2 | diamond | `diamond blastp` | Query proteome vs reference proteome |
+| 3 | bedtools | `bedtools intersect` | IsoSeq reads vs gene models — skipped if no `isoseq_gff` |
+| 4 | find | `find_split_genes.pl` | Identify split gene candidates from diamond output |
+| 5 | isoseq | `validate_merge_with_isoseq.pl` | Add IsoSeq spanning read evidence — skipped if no `isoseq_gff` |
+| 6 | merge | `merge_split_genes.pl` | Apply merges to the GFF; write new merged genes |
+| 7 | gt | `gt gff3validator` | Fast GFF3 spec check on new Mender genes only; non-fatal |
+| 8 | transl | `validate_merge_translation.pl` | Translate merged proteins, score junctions, assign PASS/FAIL/REVIEW |
+| 9 | agat | `agat_convert_sp_gxf2gxf.pl` | Biological consistency check on PASS GFF only; slow, optional |
+
+Steps 3 and 5 are automatically skipped when `isoseq_gff` is not set.
+Step 8 is skipped when `run_translation_validation = no` in config.
+Step 9 is skipped when `run_agat = no` in config.
+
+### Step 8 internal sub-steps (A–L)
+
+Step 8 (`validate_merge_translation.pl`) runs its own internal sequence of
+lettered steps. These are **not individually selectable** via `--steps` — they
+always run in order as part of step 8. Use `--no_msa` or `run_translation_validation = no`
+to control the scope of step 8 from the config.
+
+| Sub-step | Description |
+|----------|-------------|
+| A | Parse merged GFF — collect new gene IDs, source gene lists, GFF blocks |
+| B | Parse original GFF — get representative transcript and CDS length per source gene |
+| C | Translate merged proteins (gffread); write clean FASTA for diamond |
+| D | Translate source gene proteins (gffread) |
+| E | Build or verify diamond database from ref_fa |
+| F | Diamond blastp merged proteins vs reference proteome; compute coverage metrics |
+| G | Load reference proteome sequences into memory |
+| H | SwissProt diamond blast (if configured); load hit sequences for MSA |
+| I | Load merge table for flag annotations |
+| J | MSA junction scoring — align merged + source + SwissProt ref (+ best ref_fa hit) proteins; score each junction. Aligner set via `aligner` config (kalign3 recommended). |
+| K | Assign PASS / FAIL / REVIEW per merge; write `transl_result`, `msa_flag`, `min_junction_score` into GFF attributes |
+| L | Write outputs: `_report.tsv`, `_pass.gff3`, `_fail.gff3`, `_review.gff3`, `_pass_proteins.fa` |
 
 ---
 
@@ -387,7 +416,7 @@ perl find_split_genes.pl diamond.out annotation.gff subject.fa query.fa
 **Output files:**
 - `split_genes_summary.txt` — one row per gene pair, best supporting hit only
 - `split_genes_detail.txt` — one row per tiling hit per pair (full evidence)
-- `split_genes_merge.txt` — one row per merge candidate (chained pairs)
+- `merge_candidates.txt` — one row per merge candidate (chained pairs)
 
 ### `validate_merge_with_isoseq.pl`
 Adds IsoSeq spanning read evidence to the merge table. A spanning read is a
@@ -401,7 +430,7 @@ grep -P "\tmRNA\t"  isoseq.gff     > isoseq.mrna.gff
 bedtools intersect -a isoseq.mrna.gff -b models.gene.gff -wa -wb | \
     perl -p -e 's/.+\sID=([^;]+).+\sID=([^;]+).*$/$1\t$2/' > overlaps
 
-perl validate_merge_with_isoseq.pl split_genes_merge.txt overlaps > validated_merge.txt
+perl validate_merge_with_isoseq.pl merge_candidates.txt overlaps > isoseq_validated.txt
 ```
 
 Adds three columns to the merge table: `spanning_isoseq_count`,
@@ -418,13 +447,15 @@ perl merge_split_genes.pl \
     --skip_flags SKIPPED_GENE,LOW_COV \
     --gene_template  "PREFIX_g[GCOUNT:6]" \
     --trans_template "PREFIX_t[GCOUNT:6][TCOUNT:3]" \
-    validated_merge.txt input.gff output.gff
+    isoseq_validated.txt input.gff output.gff
 ```
 
 **Output files:**
-- `output.gff` — merged annotation (all new features have `source=Mender`)
-- `removed_genes.gff` — source genes removed (audit trail)
+- `output.gff` — complete merged annotation; all Mender genes have `source=Mender` and carry `transl_result`, `msa_flag`, `min_junction_score` attributes after step 8
+- `output_validated.gff` — **recommended for downstream use**; FAIL merges replaced with source genes, REVIEW merges retained by default (controlled by `final_gff_include_review`)
+- `removed_genes.gff` — source genes removed during merge (audit trail; used to restore genes in validated GFF)
 - `output.log` — merge ID → new gene ID mapping and run parameters
+- `output_run_report.txt` — full run report: all parameters, step status, result counts, output file inventory
 
 ### `split_gene_report_checks.sh`
 Bash utility with useful queries on all four output files. Run after step 4/5
@@ -438,7 +469,7 @@ bash split_gene_report_checks.sh
 
 ## Output File Column Reference
 
-### `split_genes_merge.txt` (17 columns)
+### `merge_candidates.txt` (17 columns)
 ```
 1:merge_id              unique merge group identifier
 2:num_genes             number of genes in this merge
@@ -459,7 +490,7 @@ bash split_gene_report_checks.sh
 17:flag                 quality flag(s) — see Flag Definitions below
 ```
 
-### `validated_merge.txt` (20 columns)
+### `isoseq_validated.txt` (20 columns)
 Same as above plus:
 ```
 18:spanning_isoseq_count  number of IsoSeq reads spanning 2+ genes
@@ -544,7 +575,7 @@ IsoSeq is optional. If `isoseq_gff` is left blank in the config, steps 3 and
 perl merge_split_genes.pl \
     --flags STRONG \
     --skip_flags SKIPPED_GENE,LOW_COV \
-    split_genes_merge.txt input.gff output.gff
+    merge_candidates.txt input.gff output.gff
 ```
 
 ---
@@ -556,5 +587,5 @@ CCA3 genome annotation run (April 2026):
 
 - `chacal.cfg` — project config used for the CCA3 run
 - `pipeline_summary.txt` — full results summary and manual review notes
-- `validated_merge.txt` — merge table with IsoSeq evidence (1067 candidates)
+- `isoseq_validated.txt` — merge table with IsoSeq evidence (1067 candidates)
 - `new_merges.log` — run log from `merge_split_genes.pl`

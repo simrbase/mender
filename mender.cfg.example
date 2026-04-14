@@ -16,7 +16,9 @@
 ##   4  find       run find_split_genes.pl
 ##   5  validate   run validate_merge_with_isoseq.pl (requires isoseq_gff)
 ##   6  merge      run merge_split_genes.pl
-##   7  check      run gt gff3validator and agat validation
+##   7  gt         run gt gff3validator on merged GFF (fast)
+##   8  transl     run validate_merge_translation.pl (skip if run_translation_validation = no)
+##   9  agat       run agat validation on pass GFF only (slow; skip if run_agat = no)
 ##
 ## Lines beginning with # are comments and are ignored.
 ## Leave optional values blank to skip that feature.
@@ -28,6 +30,10 @@
 ## Must be sorted parent-before-child.
 ## If not sorted: gt gff3 -sort -tidy -retainids your.gff > sorted.gff
 gff = genomic.gff
+
+## Genome sequence FASTA (required for step 8 translation validation).
+## Used by gffread to translate merged CDS and source gene CDS into proteins.
+genome_fa = genome.fa
 
 ## Protein FASTA for the genome being annotated (the query).
 ## Internal stop codons will be removed automatically in step 1.
@@ -263,15 +269,83 @@ asym_trim = yes
 ## ============================================================
 [validation]
 ##
-## Optional validation steps run after merging (step 7).
-## Requires gt (GenomeTools) and agat to be installed.
-## These are validation only — they do not modify the output GFF.
+## Optional validation steps run after merging.
+## Steps 7 (gt) and 9 (agat) require gt (GenomeTools) and agat to be installed.
+## Step 8 (translation validation) requires gffread, diamond, and mafft.
+## These steps are validation only — they do not modify the output GFF.
 
-## run_gt: yes/no — run gt gff3validator on the output GFF.
-## Checks strict GFF3 spec compliance.
+## run_gt: yes/no — run gt gff3validator on the full merged GFF (step 7, fast).
+## Checks strict GFF3 spec compliance. Useful for catching frame issues.
 run_gt = yes
 
-## run_agat: yes/no — run agat_convert_sp_gxf2gxf.pl on the output GFF.
+## run_translation_validation: yes/no — run validate_merge_translation.pl (step 8).
+## Translates merged proteins, runs diamond + MAFFT, assigns PASS/FAIL/REVIEW.
+## Produces _pass.gff3, _fail.gff3, _review.gff3 subsets.
+## Set to no to skip (e.g. when genome_fa is unavailable or for a quick run).
+run_translation_validation = yes
+
+## min_junction_score: minimum per-junction MSA score for a merge to PASS.
+## Range 0.0–1.0. Higher = stricter. Default: 0.5.
+min_junction_score = 0.5
+
+## min_merged_cov: minimum fraction of merged protein covered by best ref hit.
+## Default: 0.60 (relaxed vs the 0.85 fragment filter in find_split_genes.pl).
+min_merged_cov = 0.60
+
+## min_ref_cov: minimum fraction of best ref protein covered by merged protein.
+## Default: 0.50.
+min_ref_cov = 0.50
+
+## no_msa: yes/no — skip MSA entirely; report translation + diamond only.
+## Faster but loses junction scoring. PASS requires GOOD_MSA unless no_msa = yes.
+no_msa = no
+
+## aligner: MSA tool and strategy for junction scoring.
+##   mafft_fast  (default) — mafft --retree 2 --maxiterate 0
+##                           FFT-NS-2; no iterative refinement.
+##                           ~2–3× faster than mafft_auto; effectively identical
+##                           accuracy for small sets of related proteins.
+##   mafft_auto  — mafft --auto; slower but uses the most accurate MAFFT
+##                 strategy for the input size. Recommended for keep_msa = yes
+##                 (inspection runs where you read the alignments by eye).
+##   kalign3     — kalign3 progressive aligner; ~5–10× faster than mafft_auto.
+##                 Requires kalign to be in PATH or set via kalign_bin below.
+##                 Accuracy slightly lower for divergent sequences; suitable
+##                 when speed matters more than fine-grained junction scoring.
+aligner = mafft_fast
+
+## keep_msa: yes/no — write per-merge alignment files to <transl_out_prefix>_msa/.
+## Useful for inspecting individual junction alignments. Disk-intensive on large runs.
+keep_msa = no
+
+## transl_out_prefix: output file prefix for translation validation results.
+## Leave blank to use <workdir>/transl (e.g. mender_workdir/transl).
+transl_out_prefix =
+
+## swissprot_fa: path to UniProt/SwissProt FASTA for MSA reference sequences.
+## Manually curated proteins give better junction scoring than the species
+## reference proteome (no partial sequences, no annotation errors).
+## Falls back to ref_fa sequences if blank or file not found.
+##
+## To download SwissProt:
+##   wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
+##   gunzip uniprot_sprot.fasta.gz
+##   diamond makedb --in uniprot_sprot.fasta --db uniprot_sprot.dmnd
+swissprot_fa =
+
+## swissprot_db: pre-built diamond DB from swissprot_fa (built automatically if blank).
+swissprot_db =
+
+## final_gff_include_review: yes/no — include REVIEW merges in the final validated GFF.
+## REVIEW merges passed basic translation checks but have borderline MSA junction scores.
+## yes (default): REVIEW merges are kept — trusts IsoSeq + tiling evidence; MSA flag is
+##                informational. Recommended when IsoSeq data is available.
+## no: REVIEW merges are replaced with source genes — requires a clean MSA score to be
+##     included. More conservative; use when IsoSeq coverage is sparse.
+final_gff_include_review = yes
+
+## run_agat: yes/no — run agat_convert_sp_gxf2gxf.pl (step 9, slow).
+## Runs on the _pass.gff3 from step 8 (or full merged GFF if step 8 was skipped).
 ## Checks biological consistency (CDS/exon structure, orphan features, etc).
 ## Output is discarded (/dev/null) — only warnings and errors are reported.
 run_agat = yes
@@ -291,5 +365,8 @@ scripts_dir =
 diamond_bin    =
 bedtools_bin   =
 gt_bin         =
-agat_bin       =  
+agat_bin       =
+gffread_bin    =
+mafft_bin      =
+kalign_bin     =
 perl_bin       =
