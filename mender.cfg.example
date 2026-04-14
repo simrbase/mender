@@ -95,15 +95,28 @@ isoseq_gff =
 ## ============================================================
 [output]
 
-## Name for the merged output GFF3 file.
-output_gff = new_merges.gff
+## run_prefix: short identifier for this run, used to name all output files.
+## Typically a date or version string (no slashes or spaces).
+## All results will be written to: <results_dir>/<run_prefix>_*.
+## Example: run_prefix = 20260414
+run_prefix =
 
-## Name for the removed source genes GFF3 file (audit trail).
-removed_gff = removed_genes.gff
+## results_dir: directory where final per-run outputs are written.
+## Each run creates files like results/20260414_merges.gff, etc.
+## The directory is created automatically if it does not exist.
+## Default: results
+results_dir = results
 
-## Working directory for intermediate files.
-## Will be created if it does not exist.
+## workdir: directory for intermediate scratch files (safe to delete between runs).
+## Contains steps 1–7 intermediates: protein FAs, diamond output, split-gene tables, etc.
+## Default: mender_workdir
 workdir = mender_workdir
+
+## db_dir: directory for shared diamond databases (reference proteome and SwissProt).
+## These are expensive to build and reused across runs — not deleted between runs.
+## subject.dmnd (from subject_fa) and swissprot.dmnd are stored here.
+## Default: mender_db
+db_dir = mender_db
 
 ## ============================================================
 [diamond]
@@ -388,13 +401,9 @@ min_msa_refs = 2
 ## Default: 3.  Increase to 5 to use all available diamond hits.
 max_msa_refs = 3
 
-## keep_msa: yes/no — write per-merge alignment files to <transl_out_prefix>_msa/.
+## keep_msa: yes/no — write per-merge alignment files to <results_prefix>_msa/.
 ## Useful for inspecting individual junction alignments. Disk-intensive on large runs.
 keep_msa = no
-
-## transl_out_prefix: output file prefix for translation validation results.
-## Leave blank to use <workdir>/transl (e.g. mender_workdir/transl).
-transl_out_prefix =
 
 ## swissprot_fa: path to UniProt/SwissProt FASTA for MSA reference sequences.
 ## Manually curated proteins give better junction scoring than the species
@@ -407,7 +416,9 @@ transl_out_prefix =
 ##   diamond makedb --in uniprot_sprot.fasta --db uniprot_sprot.dmnd
 swissprot_fa =
 
-## swissprot_db: pre-built diamond DB from swissprot_fa (built automatically if blank).
+## swissprot_db: override path for the pre-built SwissProt diamond DB.
+## Normally derived automatically as <db_dir>/swissprot.dmnd; only set this if you
+## want to use a SwissProt DB stored outside of db_dir.
 swissprot_db =
 
 ## final_gff_include_review: yes/no — include REVIEW merges in the final validated GFF.
