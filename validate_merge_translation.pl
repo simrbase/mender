@@ -417,7 +417,12 @@ printf "  Found in orig GFF:    %d\n", $n_src_found;
 print "\nSTEP C: Translating merged proteins (gffread)...\n";
 
 my $merged_prot_fa = "${out}_merged_proteins.fa";
-run_cmd("$gffread_bin $merged_gff -g $genome_fa -y $merged_prot_fa",
+my $gffread_log    = "${out}_gffread.log";
+
+# Truncate gffread log; steps C and D both append to it.
+open(my $grl, ">", $gffread_log) or warn "Cannot create $gffread_log: $!\n"; close $grl;
+
+run_cmd("$gffread_bin $merged_gff -g $genome_fa -y $merged_prot_fa >> $gffread_log 2>&1",
         "gffread translate merged GFF");
 
 # Parse merged proteins — pick representative per gene (longest without internal stop)
@@ -489,7 +494,7 @@ my $diamond_query_fa = "${out}_merged_proteins_clean.fa";
 print "\nSTEP D: Translating source proteins (gffread)...\n";
 
 my $source_prot_fa = "${out}_source_proteins.fa";
-run_cmd("$gffread_bin $orig_gff -g $genome_fa -y $source_prot_fa",
+run_cmd("$gffread_bin $orig_gff -g $genome_fa -y $source_prot_fa >> $gffread_log 2>&1",
         "gffread translate original GFF");
 
 my ($src_prot_ref, $src_prot_order) = read_fasta($source_prot_fa);
@@ -756,11 +761,20 @@ if (defined $merge_table && -f $merge_table) {
 # ---------------------------------------------------------------------------
 # STEP J: MAFFT junction scoring
 # ---------------------------------------------------------------------------
-printf "\nSTEP J: MSA junction scoring (aligner: %s)...\n", $aligner unless $no_msa;
-print  "\nSTEP J: Skipping MSA (--no_msa)\n" if $no_msa;
+my $msa_dir    = "${out}_msa";
+my $kalign_log = "${out}_kalign.log";
 
-my $msa_dir = "${out}_msa";
 make_path($msa_dir) if $keep_msa && !$no_msa;
+
+# Truncate kalign log at run start; each merge call appends to it.
+if (!$no_msa && $aligner eq "kalign3") {
+    open(my $fh, ">", $kalign_log) or warn "Cannot create $kalign_log: $!\n";
+    close $fh;
+}
+
+printf "\nSTEP J: MSA junction scoring (aligner: %s)...\n", $aligner unless $no_msa;
+printf "  kalign log: %s\n", $kalign_log if !$no_msa && $aligner eq "kalign3";
+print  "\nSTEP J: Skipping MSA (--no_msa)\n" if $no_msa;
 
 my %junction_scores;  # new_gene_id -> [score1, score2, ...]
 my %msa_flag;         # new_gene_id -> flag string
@@ -869,7 +883,7 @@ for my $gid (@merge_ids_sorted) {
     my $merged_len = length($merged_prot{$gid});
     my $aln_cmd;
     if ($aligner eq "kalign3") {
-        $aln_cmd = "$kalign_bin -i $input_fa -f fasta -o $aligned_fa 2>/dev/null";
+        $aln_cmd = "$kalign_bin -i $input_fa -f fasta -o $aligned_fa >> $kalign_log 2>&1";
     } elsif ($aligner eq "mafft_auto") {
         # --auto with speed fallback for very long proteins
         my $opts = $merged_len > 5000
