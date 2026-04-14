@@ -33,7 +33,8 @@ Box style legend:
 ╔══════════════════════════════════════════════════════════════╗
 ║  STEP 1 — PREPARE                                            ║
 ║                                                              ║
-║  · Strip internal stop codons from query protein sequences   ║
+║  · Remove query proteins containing internal stop codons or  ║
+║    dots — reads full multi-line records before filtering     ║
 ║  · Extract gene features from GFF                            ║
 ║  · Extract IsoSeq mRNA features  (if IsoSeq GFF provided)    ║
 ╚══════════════════════════════════════════════════════════════╝

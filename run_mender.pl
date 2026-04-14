@@ -348,11 +348,16 @@ if ($run_steps{1}) {
     check_file($proteome_fa, "proteome_fa");
     check_file($gff,         "gff");
 
-    # remove internal stop codons from protein fasta
+    # clean protein fasta for diamond:
+    #   1. read full FASTA records (multi-line safe via $/ trick)
+    #   2. strip terminal stop (* or .) — biologically normal, just upsets diamond
+    #   3. remove entire sequence if internal stops or dots remain
     run_cmd(
-        "grep -v '\\*' $proteome_fa | " .
-        "grep -v -P '^[^>].*\\.' > $clean_fa",
-        "Remove internal stops from protein fasta"
+        "perl -ne 'BEGIN{\$/=\">\"}; chomp; next unless /\\S/; " .
+        "my (\$h, \$s) = split(/\\n/, \$_, 2); \$s =~ s/\\n//g; " .
+        "\$s =~ s/[*.]\$//; " .
+        "print \">\$h\\n\$s\\n\" unless \$s =~ /[*.]/' $proteome_fa > $clean_fa",
+        "Clean protein fasta: strip terminal stops, remove sequences with internal stops"
     );
 
     # extract gene features for bedtools
