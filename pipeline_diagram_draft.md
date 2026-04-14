@@ -64,10 +64,13 @@ Box style legend:
 ║                                                              ║
 ║  Tiling test                                                 ║
 ║    · Same chromosome, same strand only                       ║
+║    · Nested genes excluded from rank (don't inflate dist)    ║
 ║    · Do two adjacent flagged fragments together span the     ║
 ║      same reference protein end-to-end?                      ║
 ║      (±15 aa tolerance in reference protein coordinates)     ║
 ║    · If yes: the pair is a split-gene candidate              ║
+║    · Flag LARGE_SPAN  if genomic footprint > 500 kb          ║
+║    · Flag LARGE_SPAN_EXTREME  if footprint > 2 Mb            ║
 ║                                                              ║
 ║  Chaining                                                    ║
 ║    · Link supported pairs into multi-gene loci  (A→B→C)      ║
@@ -345,6 +348,34 @@ shorter proteins are not missed.
 (within `max_dist = 4` gene positions of each other on the same chromosome
 and on the same strand — opposite-strand pairs are discarded immediately),
 Mender checks whether their DIAMOND alignment coordinates on
+the same reference protein are complementary. Before adjacency is
+evaluated, nested genes — genes whose coordinates fall entirely within
+another gene — are excluded from the genomic rank. Without this step, a
+small intronic gene embedded inside a larger locus would inflate the
+apparent distance between the two flanking split fragments and prevent the
+pair from being found. Nested genes are reported in the log but are
+otherwise unaffected and remain in the output annotation.
+
+**Genomic span flags.** Even when two fragments pass the tiling test, the
+physical distance they would be joined across on the genome is a useful
+sanity check against false positives from gene cluster groups — families
+where multiple paralogous copies sit in tandem, each aligning to the same
+reference protein independently. If the total genomic footprint of the
+candidate locus exceeds 500 kb the candidate is flagged `LARGE_SPAN`; if
+it exceeds 2 Mb it is flagged `LARGE_SPAN_EXTREME`. Large vertebrate genes
+do exist (neurexins, ROBO receptors, dystrophin can exceed 1 Mb), so
+`LARGE_SPAN` alone is not grounds for rejection — but it should prompt
+cross-checking with IsoSeq spanning evidence. `LARGE_SPAN_EXTREME`
+candidates should be added to `skip_flags` unless independent evidence
+confirms the merge. Both thresholds are configurable via
+`--large_span_warn` and `--large_span_extreme`.
+
+A related flag, `SKIPPED_GENE`, is raised when a non-nested intervening
+gene sits between the two fragments (i.e., `genomic_dist > 1`). This gene
+may be an additional split fragment that failed filters, an unrelated gene,
+or an artifact — the `skipped_genes` column in the merge table records its
+ID for manual inspection. `SKIPPED_GENE` candidates are recommended for
+`skip_flags` and manual review before merging.
 the same reference protein are complementary. The key measure is
 `combined_cov_pct`: the span from the leftmost alignment start to the
 rightmost alignment end on the reference protein, divided by the reference
