@@ -380,6 +380,14 @@ w_gap          = 0.4
 ## Set to 1 to suppress warnings for single-reference alignments.
 min_msa_refs = 2
 
+## max_msa_refs: maximum number of reference sequences to include in each MSA.
+## Diamond is run with --max-target-seqs 5, so values above 5 have no effect
+## unless you also increase the diamond search depth.  More refs improve the
+## robustness of the junction score (especially the gap-pattern metric), but
+## very distant homologs in positions 4–5 can dilute conservation signal.
+## Default: 3.  Increase to 5 to use all available diamond hits.
+max_msa_refs = 3
+
 ## keep_msa: yes/no — write per-merge alignment files to <transl_out_prefix>_msa/.
 ## Useful for inspecting individual junction alignments. Disk-intensive on large runs.
 keep_msa = no

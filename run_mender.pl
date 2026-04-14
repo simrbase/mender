@@ -146,6 +146,7 @@ my $tv_w_conservation = cfg("validation", "w_conservation",           "0.3");
 my $tv_w_continuity   = cfg("validation", "w_continuity",             "0.3");
 my $tv_w_gap          = cfg("validation", "w_gap",                    "0.4");
 my $tv_min_msa_refs   = cfg("validation", "min_msa_refs",             "2");
+my $tv_max_msa_refs   = cfg("validation", "max_msa_refs",             "3");
 
 # paths
 my $scripts_dir  = cfg("paths", "scripts_dir",  "") || dirname(abs_path($0));
@@ -623,6 +624,7 @@ if ($run_steps{8}) {
         . " --w_continuity $tv_w_continuity"
         . " --w_gap $tv_w_gap"
         . " --min_msa_refs $tv_min_msa_refs"
+        . " --max_msa_refs $tv_max_msa_refs"
         . " --gffread_bin $gffread_bin"
         . " --diamond_bin $diamond_bin"
         . " --mafft_bin $mafft_bin"
@@ -905,6 +907,7 @@ if ($run_steps{9}) {
     $r->(sprintf "  w_conservation: %.2f  w_continuity: %.2f  w_gap: %.2f",
         $tv_w_conservation, $tv_w_continuity, $tv_w_gap);
     $r->("  min_msa_refs:               $tv_min_msa_refs");
+    $r->("  max_msa_refs:               $tv_max_msa_refs");
     $r->("  no_msa:                     " . ($tv_no_msa =~ /^yes$/i ? "yes" : "no"));
     $r->("  keep_msa:                   " . ($tv_keep_msa =~ /^yes$/i ? "yes" : "no"));
     $r->("  swissprot_fa:               " . ($tv_swissprot_fa || "(not set — using ref_fa)"));
