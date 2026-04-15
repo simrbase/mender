@@ -19,6 +19,10 @@ For a worked example comparing reference proteome choices and a recommended
 two-pass strategy, see
 [case_study_reference_comparison.md](case_study_reference_comparison.md).
 
+For a worked example comparing `max_dist` settings and a detailed analysis of
+SKIPPED_GENE chain behavior (including strand effects and IsoSeq evidence), see
+[case_study_maxdist_comparison.md](case_study_maxdist_comparison.md).
+
 For a consolidated table of all flags across all pipeline steps, see
 [flags_reference.md](flags_reference.md).
 
