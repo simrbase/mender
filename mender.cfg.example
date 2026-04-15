@@ -238,6 +238,10 @@ skip_flags = SKIPPED_GENE,LOW_COV
 ## intervening gene structure.
 ## Default: no (conservative — skip_flags are always respected)
 ## Recommended: yes when IsoSeq data is available and max_dist > 2
+## Caveat: FULL_SPAN is coordinate-based only (no MAPQ in GFF). For paralogous
+## or repetitive gene families (HSP70, collagen, zinc fingers, carboxylesterases)
+## a spanning read may reflect chimeric or mis-placed alignment. Verify rescued
+## merges in a genome browser, or filter the source BAM on MAPQ >= 20 first.
 spanning_rescue = no
 
 ## large_span_warn: merged locus genomic span (bp) above which LARGE_SPAN is flagged.

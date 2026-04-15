@@ -18,7 +18,7 @@ and `flags` in the `[merge_filters]` config section.
 | `WEAK_END` | A terminal junction has 1–2 tiling hits but survived asymmetric trimming | `skip_flags`, `flags` |
 | `WEAK_INTERNAL` | An internal junction has 1–2 tiling hits but survived chain splitting | `skip_flags`, `flags` |
 | `LOW_COV` | Combined reference coverage <60% — more likely domain sharing than a split gene | `skip_flags`, `flags` |
-| `SKIPPED_GENE` | A non-adjacent **same-strand** gene sits inside the merge locus — the skipped gene may be an additional split fragment; review the `skipped_genes` column before merging. In `skip_flags` by default. Rescuable with `spanning_rescue = yes` if `isoseq_flag` is `FULL_SPAN`. | `skip_flags`, `flags` |
+| `SKIPPED_GENE` | A non-adjacent **same-strand** gene sits inside the merge locus — the skipped gene may be an additional split fragment; review the `skipped_genes` column before merging. In `skip_flags` by default. Rescuable with `spanning_rescue = yes` if `isoseq_flag` is `FULL_SPAN`. Use `spanning_rescue` with caution for paralogous gene families — a FULL_SPAN call in repetitive or multi-copy loci may reflect a chimeric alignment. | `skip_flags`, `flags` |
 | `OPPOSITE_STRAND_SKIP` | A non-adjacent gene sits inside the merge locus, but **all** skipped genes are on the opposite strand — these are unrelated interleaved genes and do not affect the validity of the merge. Not in `skip_flags` by default. | `skip_flags`, `flags` |
 | `TRANSITIVE_JOIN` | One or more consecutive gene pairs in the chain have no direct pairwise tiling evidence; the chain connection is inferred transitively. `STRONG,TRANSITIVE_JOIN` warrants the same scrutiny as `WEAK_END` | `skip_flags`, `flags` |
 | `MULTI_ISOFORM_JOIN` | At least one source gene has >1 transcript; the merged gene will contain cross-product isoform combinations not all of which are biologically real | `skip_flags`, `flags` |
@@ -35,7 +35,7 @@ of `isoseq_validated.txt`). Controlled by `require_isoseq` and
 
 | Flag | Meaning | Filterable? |
 |------|---------|-------------|
-| `FULL_SPAN` | ≥1 long-read transcript spans all genes in the locus — strong co-transcription evidence | `require_isoseq` |
+| `FULL_SPAN` | ≥1 long-read transcript spans all genes in the locus — strong co-transcription evidence. **Caveat:** spanning status is based on alignment coordinates only; for gene families with high paralogy or repetitive protein domains (collagen, HSP70, zinc finger arrays, etc.) a read may appear to span the locus due to mis-alignment between paralogous copies or alignment slippage through repetitive sequence. Verify in a genome browser for such families, especially when used with `spanning_rescue`. If the original BAM is available, filter on MAPQ ≥ 20 before deriving the GFF. | `require_isoseq` |
 | `PARTIAL_SPAN` | Spanning reads exist but none reach a terminal gene — terminal fragment may not belong; use `fix_partial = yes` to auto-trim | `require_isoseq` |
 | `NO_SPANNERS` | No spanning reads found — reads may be present on individual fragments but none bridge more than one gene. May reflect expression timing or tissue, not gene structure. Not a negative result. | `require_isoseq` |
 

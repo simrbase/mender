@@ -394,7 +394,13 @@ data is available and the merge has `FULL_SPAN` support, setting
 `spanning_rescue = yes` will rescue the merge regardless of the `skip_flags`
 setting — a single read spanning the entire locus end-to-end is strong
 co-transcription evidence even when the intervening gene is on the same
-strand.
+strand. **Alignment reliability caveat:** FULL_SPAN status is based on
+alignment coordinates only; no per-read MAPQ is available from the IsoSeq
+GFF. In paralogous or repetitive gene families (HSP70, collagen, zinc-finger
+arrays, carboxylesterases), a read may appear to span the locus due to
+chimeric alignment or alignment slippage — verify in a genome browser or
+with MAPQ ≥ 20 filtered reads from the original BAM before accepting rescued
+merges in these families.
 
 **`OPPOSITE_STRAND_SKIP`** — **all** intervening genes are on the opposite
 strand. In vertebrate genomes it is common for genes on complementary
@@ -527,7 +533,15 @@ gene in the locus, not just one or two of them. Three outcomes are
 possible:
 
 - **FULL_SPAN** — at least one transcript spans all genes in the locus.
-  Strong confirmation; merge is well-supported.
+  Strong confirmation; merge is well-supported. **Alignment reliability caveat:**
+  FULL_SPAN is determined from alignment coordinates only — the pipeline does
+  not have access to per-read MAPQ or alignment identity from the IsoSeq GFF.
+  For genes in paralogous families (HSP70, collagen, carboxylesterases,
+  zinc-finger arrays) or with highly repetitive domains, a "spanning" alignment
+  may reflect a chimeric or mis-placed read rather than genuine co-transcription.
+  If the original BAM is available, verify with MAPQ ≥ 20 filtered reads.
+  Otherwise, inspect spanning candidates from high-risk gene families in a
+  genome browser before relying on the rescue.
 - **PARTIAL_SPAN** — reads are present and span some genes in the chain
   but none reach a terminal fragment. The terminal fragment may be a
   neighbouring gene that was incorrectly chained; `fix_partial = yes`

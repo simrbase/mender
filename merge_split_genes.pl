@@ -185,6 +185,8 @@ use warnings;
 ##       output.gff
 ##
 ## Rescue SKIPPED_GENE merges that have FULL_SPAN IsoSeq support:
+## (Caveat: FULL_SPAN is coordinate-based; no MAPQ in GFF. For paralogous or
+## repetitive gene families, verify rescued merges in a genome browser.)
 ##
 ##   perl merge_split_genes.pl \
 ##       --fix_partial \
