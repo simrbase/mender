@@ -387,6 +387,90 @@ Tiers 1–3 have compound evidence from at least two independent sources (protei
 
 ---
 
+## Biological Interpretation
+
+### What each reference is actually measuring
+
+The two proteomes are not interchangeable — they detect different classes of
+split gene.
+
+**Anolis carolinensis** detects splits in genes that have diverged from
+pan-vertebrate orthologs or evolved within the squamate lineage. For a
+chameleon gene with no close SwissProt entry, Anolis is the only reference
+that can tile the junction. Importantly, Anolis also covers lineage-specific
+gene expansions — duplicated or rapidly evolving gene families unique to
+reptiles that simply have no SwissProt representative.
+
+**UniProt SwissProt** detects splits in ancient, conserved vertebrate genes.
+The power comes from *phylogenetic depth*: a gene split in the chameleon
+whose ortholog is intact in human, mouse, chicken, and zebrafish generates
+four independent SwissProt tiling hits, each contributing independently to
+the `max_tiling_hits` score. This is why SwissProt produces a CLEAN-dominated
+candidate set (108/157, 69%) where Anolis is SINGLE_HIT-dominated (137/238,
+58%) — conserved genes get depth from vertebrate diversity, while the Anolis
+run is limited by the per-gene isoform count in a single species.
+
+### Why Anolis cannot see the SwissProt-only merges
+
+This is the most important biological point in this comparison: **if the
+Anolis annotation is also fragmented at a locus, Anolis cannot detect the
+split**. The tiling algorithm requires a reference protein to span the
+junction between two chameleon fragments. If the Anolis ortholog is itself
+split by the same annotation error, the individual Anolis fragments tile
+against each chameleon fragment separately but never bridge the gap.
+SwissProt detects those loci because curated SwissProt entries are drawn from
+experimentally characterised proteins — intact, full-length sequences regardless
+of what any one genome annotation looks like. The 157 SwissProt-only merges
+are not a failure of Anolis sensitivity; they are a fundamental limit of
+using a draft annotation as the sole reference.
+
+### What the confidence tiers mean for annotation decisions
+
+| Tier | Criteria | Biological meaning | Recommended action |
+|------|----------|-------------------|-------------------|
+| 1 | Shared by both runs (773) | Two independent protein sources agree. Virtually certain gene-model error. | Accept all |
+| 2 | Anole-only, FULL_SPAN IsoSeq (145) | Lineage-specific or diverged gene, confirmed by spanning transcript. | Accept |
+| 3 | SP-only, CLEAN + FULL_SPAN (73) | Ancient conserved gene, multi-species protein signal + IsoSeq spanning. | Accept |
+| 4 | SP-only, PASS, no IsoSeq (74) | Conserved gene, protein evidence only — no transcriptome confirmation. | Review; check genome browser |
+| 5 | Anole-only, NO_SPANNERS (91) | Thin protein evidence (often SINGLE_HIT), no transcriptome support. | Scrutinize; low-confidence merges |
+
+Tiers 1–3 (991 merges total) have compound evidence from at least two
+independent sources. These are the merges to accept without hesitation.
+Tiers 4–5 rest on a single evidence type and the annotation benefit of merging
+should be weighed against the risk of incorrectly collapsing two distinct genes.
+
+For CCA3 the Tier 5 set (91 Anole-only, NO_SPANNERS) deserves specific attention.
+These are primarily SINGLE_HIT merges where one Anolis protein tiles across the
+junction but no IsoSeq transcript confirms the join. At this evidence level, a
+misassembly in the genome, a transposable element insertion, or a genuine
+tandem duplicate are all plausible alternatives to a split gene. Applying a
+`min_tiling = 2` cutoff would remove most of these; whether that is appropriate
+depends on how well Anolis covers the chameleon gene space.
+
+### The sequential two-pass strategy is a genuine discovery mechanism
+
+The sequential approach is not merely a bookkeeping solution. After pass 1
+merges the Anolis-detectable splits, the merged AB protein is longer and
+covers more of the reference sequence. For the 9 SP_SUPERSET cases, the
+terminal fragment C was previously too short or too diverged to tile
+independently — below the detection threshold. The merged AB protein crosses
+that threshold and pass 2 detects an AB→C merge that no single-pass run
+could find. This is an emergent discovery: each pass expands the detectable
+merge space for the next. In principle, a third pass on the pass 2 output
+could recover further extended chains, though the CCA3 annotation likely
+has few if any remaining 5–6 fragment splits after two passes.
+
+### Reference choice by scenario
+
+| Scenario | Recommended reference | Rationale |
+|----------|-----------------------|-----------|
+| Well-annotated genome with close relative | Close relative first, then SwissProt second pass | Maximises lineage-specific detection; SwissProt catches conserved splits the relative misses |
+| Poorly annotated or deeply diverged genome | SwissProt first (or only) | Close-relative annotation may be too fragmented to be useful as a reference |
+| No IsoSeq data | Both passes, but promote Tier 1 and SP-only CLEAN only | Without transcriptome confirmation, require strong multi-hit protein signal |
+| Gene family study | Close relative, `min_tiling = 2`, no SwissProt | Reduces false positives from single-hit duplicates; SwissProt depth not needed |
+
+---
+
 ## Practical conclusions
 
 A single Anolis run captures the widest candidate set, including lineage-specific and diverged genes invisible to SwissProt. A single SwissProt run captures well-conserved genes with multi-species tiling support that Anolis misses. Neither run alone is sufficient.
