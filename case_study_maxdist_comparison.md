@@ -182,6 +182,68 @@ does not eliminate risk from single chimeric reads.
 
 ---
 
+## Biological Interpretation
+
+### What these numbers actually mean
+
+`max_dist` controls **how fragmented a split gene can be detected as**. At
+max_dist=4, a gene split into 3+ pieces with gaps in the protein tiling graph
+can still form a chain. But the near-identical PASS counts without rescue
+(992 vs 994) reveal something important: **most split genes in CCA3 are simple
+2-fragment splits** where the two pieces tile adjacently on the reference
+protein. The wider window at max_dist=4 generates more multi-fragment
+candidates, but those extra candidates almost all have a same-strand gene
+intervening (`SKIPPED_GENE`) and are filtered — no net gain without rescue.
+
+`spanning_rescue` solves a distinct biological problem: **the annotator
+couldn't bridge a complex locus**. The pattern is: the annotator calls genes
+A, B, C as three separate loci; B sits between two fragments of what should
+be a single gene. Protein evidence alone cannot resolve this — you need
+independent transcriptional evidence. A `FULL_SPAN` IsoSeq read spanning the
+entire locus end-to-end, without a splicing gap that would suggest B is truly
+independent, provides exactly that. The +19 clean PASS merges with essentially
+no REVIEW inflation confirms that spanning reads are genuinely discriminatory
+in this dataset, not noise.
+
+### The 4 uniquely recoverable loci
+
+These are the biologically significant gains at max_dist=4 + rescue:
+
+| Gene | Biology | IsoSeq support | Confidence |
+|------|---------|----------------|------------|
+| **ELP1** | Single-copy elongator complex subunit; essential for neuronal development and tRNA wobble modification | 13 spanning reads | High — no paralogy risk |
+| **SLC19A2** | Single-copy thiamine transporter (SLC19 family); haploinsufficiency causes thiamine-responsive megaloblastic anaemia | 21 spanning reads | High — highest support in the rescue set |
+| **MCF2L** | RhoGEF signaling; has paralog MCF2L2 in the same genome | 5 spanning reads | Moderate — verify in genome browser |
+| **HSPA4L** | Hsp70 chaperone family; highly conserved, multicopy, repetitive domain structure | 7 spanning reads | Lower — highest chimeric alignment risk |
+
+ELP1 and SLC19A2 are single-copy, functionally important genes with strong
+spanning-read support — these are almost certainly genuine split-gene errors.
+HSPA4L and MCF2L sit in paralogous families where a spanning read could
+reflect chimeric alignment across paralogs rather than genuine co-transcription;
+they warrant manual verification before finalising the annotation.
+
+### Why the IsoSeq data earns its weight here
+
+These 4 loci share a profile that defeats automated annotators: large genomic
+spans, gene-dense intervals, and complex multi-exon internal structure. In
+each case the protein tiling evidence is strong (71–96% reference coverage)
+but the annotator was deterred by an intervening same-strand gene call. For a
+high-quality reference annotation like CCA3, leaving these loci fragmented
+would be a genuine biological error. The IsoSeq data is not merely filtering
+noise — it is resolving loci that are fundamentally ambiguous from protein
+evidence alone.
+
+### Parameter guidance by scenario
+
+| Situation | max_dist | spanning_rescue | Rationale |
+|-----------|----------|-----------------|-----------|
+| IsoSeq available, diverse library | 4 | yes | Full recall; spanning reads provide independent co-transcription evidence |
+| IsoSeq available, repetitive or polyploid genome | 4 | yes + review paralogous families | Chimeric alignment risk is higher; inspect `STRONG` flagged rescues manually; raise `isoseq_min_spanning` |
+| No IsoSeq | 2 | no | max_dist=2 gains 2 PASS by avoiding SKIPPED_GENE chains that cannot be rescued anyway; `spanning_rescue` cannot fire |
+| Targeting a specific gene family | 2 | no | Conservative setting avoids chaining unrelated paralogs |
+
+---
+
 ## Recommendation
 
 **`max_dist = 4` with `spanning_rescue = yes` gives the best recall.**
