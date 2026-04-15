@@ -460,6 +460,23 @@ merge space for the next. In principle, a third pass on the pass 2 output
 could recover further extended chains, though the CCA3 annotation likely
 has few if any remaining 5–6 fragment splits after two passes.
 
+### SKIPPED_GENE candidates are not resolved by reference choice
+
+An explicit comparison was run to test whether any of the 42 Anolis SKIPPED_GENE
+candidates would lose their flag in the SwissProt run — the hypothesis being that
+a lineage-specific intervening gene with no SwissProt hit would be invisible to
+the tiling logic and not trigger the flag.
+
+Result: all 42 SKIPPED_GENE chains appeared in the SwissProt run with
+`SKIPPED_GENE` still present. Zero were cleared. The SP run produced exactly
+42 SKIPPED_GENE candidates — the identical set. Every intervening gene at these
+loci is a conserved vertebrate gene with SwissProt entries; none are
+squamate-specific. The flag fires regardless of reference proteome.
+
+**The sequential two-pass approach does not rescue SKIPPED_GENE candidates.**
+The only route to recovering them is `spanning_rescue = yes` with IsoSeq data,
+which is independent of reference proteome choice entirely.
+
 ### Reference choice by scenario
 
 | Scenario | Recommended reference | Rationale |
