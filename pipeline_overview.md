@@ -383,19 +383,32 @@ confirms the merge. Both thresholds are configurable via
 `--large_span_warn` and `--large_span_extreme`.
 
 Two related flags cover the case where a non-adjacent gene sits between
-fragments (`genomic_dist > 1`). If any such intervening gene is on the
-**same strand** as the chain, `SKIPPED_GENE` is raised — that gene may be
-an additional split fragment that failed filters, and the `skipped_genes`
+fragments (`genomic_dist > 1`).
+
+**`SKIPPED_GENE`** — at least one intervening gene is on the **same strand**
+as the chain. That gene may be an additional split fragment that failed
+filters, a paralog, or an unrelated same-strand gene; the `skipped_genes`
 column records its ID for manual inspection. `SKIPPED_GENE` candidates are
 recommended for `skip_flags` and manual review before merging. If IsoSeq
 data is available and the merge has `FULL_SPAN` support, setting
-`spanning_rescue = yes` in the config will rescue it regardless of the
-`skip_flags` setting. If **all** intervening genes are on the opposite
-strand, `OPPOSITE_STRAND_SKIP` is raised instead — these are merely
-interleaved unrelated genes and do not affect merge validity; the flag is
-not in `skip_flags` by default.
-The key measure is
-`combined_cov_pct`: the span from the leftmost alignment start to the
+`spanning_rescue = yes` will rescue the merge regardless of the `skip_flags`
+setting — a single read spanning the entire locus end-to-end is strong
+co-transcription evidence even when the intervening gene is on the same
+strand.
+
+**`OPPOSITE_STRAND_SKIP`** — **all** intervening genes are on the opposite
+strand. In vertebrate genomes it is common for genes on complementary
+strands to be physically interleaved: a + strand gene may lie entirely
+within the intron of a − strand gene, or the two loci may simply overlap in
+genomic coordinates. Because the pipeline chains candidates strictly by
+strand, an opposite-strand gene occupying the interval between two split
+fragments is invisible to the split-gene logic — it is not a candidate for
+the merge and poses no structural concern. `OPPOSITE_STRAND_SKIP` is
+therefore informational only and is **not** included in `skip_flags` by
+default. Before this strand-aware check was introduced, these cases raised a
+spurious `SKIPPED_GENE` and were unnecessarily sent to manual review.
+
+The key measure is `combined_cov_pct`: the span from the leftmost alignment start to the
 rightmost alignment end on the reference protein, divided by the reference
 protein length. This is a span measure, not the sum of individual
 coverages — a 5 aa gap between the two alignments is included in the span
@@ -406,9 +419,10 @@ coordinates; set via `wiggle` in config). A positive tiling gap means the
 alignments don't quite meet; a negative gap means they overlap slightly;
 both are acceptable within tolerance. The maximum number of gene positions
 separating the two candidates is controlled by `max_dist` (default 4,
-configurable). Values above 4 substantially increase the number of
-`SKIPPED_GENE` candidates and run time. If the test passes, the pair is a
-split-gene candidate.
+configurable). Values above 2 increase the number of `SKIPPED_GENE` and
+`OPPOSITE_STRAND_SKIP` candidates and run time; `max_dist = 2` is
+recommended as the default when `SKIPPED_GENE` is in `skip_flags`. If the
+test passes, the pair is a split-gene candidate.
 
 *Example:* Reference protein = 500 aa. Gene A aligns to positions 10–200;
 gene B aligns to positions 205–480. Combined span = 480 − 10 + 1 = 471 aa.
