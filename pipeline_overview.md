@@ -188,7 +188,7 @@ flags are comma-separated in the `flag` column.
 | Parameter | What it controls | Default |
 |---|---|---|
 | `skip_flags` | Exclude candidates whose flag column contains any of these | `SKIPPED_GENE,LOW_COV` |
-| `spanning_rescue` | If `yes`, rescue FULL_SPAN IsoSeq–confirmed merges even if a `skip_flags` term matches | `no` |
+| `spanning_rescue` | If `yes`, rescue merges blocked by `SKIPPED_GENE` or `OPPOSITE_STRAND_SKIP` when `isoseq_flag` is `FULL_SPAN`. Does **not** rescue `LOW_COV` or other evidence-quality flags. | `no` |
 | `flags` | Include only candidates matching this flag (`all` = no filter) | `all` |
 | `min_tiling` | Minimum `max_tiling_hits` to process a candidate | `1` |
 | `min_cov` | Minimum combined reference coverage % | `0` |
@@ -391,10 +391,13 @@ filters, a paralog, or an unrelated same-strand gene; the `skipped_genes`
 column records its ID for manual inspection. `SKIPPED_GENE` candidates are
 recommended for `skip_flags` and manual review before merging. If IsoSeq
 data is available and the merge has `FULL_SPAN` support, setting
-`spanning_rescue = yes` will rescue the merge regardless of the `skip_flags`
-setting — a single read spanning the entire locus end-to-end is strong
-co-transcription evidence even when the intervening gene is on the same
-strand. **Alignment reliability caveat:** FULL_SPAN status is based on
+`spanning_rescue = yes` will rescue the merge — a single read spanning the
+entire locus end-to-end is strong co-transcription evidence even when the
+intervening gene is on the same strand. Rescue applies only to structural
+flags (`SKIPPED_GENE`, `OPPOSITE_STRAND_SKIP`); `LOW_COV` and other
+evidence-quality flags are not rescued, because a spanning read confirms
+co-transcription but does not substitute for missing protein tiling support.
+**Alignment reliability caveat:** FULL_SPAN status is based on
 alignment coordinates only; no per-read MAPQ is available from the IsoSeq
 GFF. In paralogous or repetitive gene families (HSP70, collagen, zinc-finger
 arrays, carboxylesterases), a read may appear to span the locus due to

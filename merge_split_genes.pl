@@ -185,6 +185,9 @@ use warnings;
 ##       output.gff
 ##
 ## Rescue SKIPPED_GENE merges that have FULL_SPAN IsoSeq support:
+## (Rescue applies only when the blocking skip_flag is SKIPPED_GENE or
+## OPPOSITE_STRAND_SKIP — structural flags that IsoSeq evidence can override.
+## LOW_COV and other evidence-quality flags are never rescued.)
 ## (Caveat: FULL_SPAN is coordinate-based; no MAPQ in GFF. For paralogous or
 ## repetitive gene families, verify rescued merges in a genome browser.)
 ##
@@ -490,12 +493,21 @@ while (my $mline = <MERGE>) {
 
     # exclude filter: --skip_flags — skip if flag contains any skip term
     my $skip = 0;
+    my $skip_rescuable = 1;   # all matching skip_flags are rescuable by IsoSeq?
+    my @rescuable_flags = qw(SKIPPED_GENE OPPOSITE_STRAND_SKIP);
     for my $sf (@skip_flag_list) {
-        if ($flag =~ /\b\Q$sf\E\b/) { $skip = 1; last; }
+        if ($flag =~ /\b\Q$sf\E\b/) {
+            $skip = 1;
+            # LOW_COV and other non-structural flags represent weak protein evidence;
+            # IsoSeq co-transcription does not substitute for missing tiling support.
+            my $is_rescuable = grep { $sf eq $_ } @rescuable_flags;
+            $skip_rescuable = 0 unless $is_rescuable;
+        }
     }
-    # --spanning_rescue: if a merge would be skipped but has FULL_SPAN IsoSeq
-    # support, rescue it regardless of which skip_flag triggered.
-    if ($skip && $spanning_rescue && $isoseq_flag eq "FULL_SPAN") { $skip = 0; }
+    # --spanning_rescue: rescue if skipped solely by structural flags (SKIPPED_GENE /
+    # OPPOSITE_STRAND_SKIP) and FULL_SPAN IsoSeq confirms co-transcription.
+    # Does NOT rescue LOW_COV or other evidence-quality flags.
+    if ($skip && $skip_rescuable && $spanning_rescue && $isoseq_flag eq "FULL_SPAN") { $skip = 0; }
     if ($skip) { $n_skipped++; next; }
 
     # numeric filters

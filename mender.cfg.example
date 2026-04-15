@@ -232,10 +232,11 @@ fix_partial = yes
 skip_flags = SKIPPED_GENE,LOW_COV
 
 ## spanning_rescue: if yes, rescue merges that would be excluded by skip_flags
-## but have FULL_SPAN IsoSeq support. This allows SKIPPED_GENE (or any other
-## flagged) merges to be included when a single IsoSeq read spans the entire
-## locus end-to-end, providing direct transcript evidence regardless of the
-## intervening gene structure.
+## but have FULL_SPAN IsoSeq support. Rescue applies only when the blocking
+## skip_flag is SKIPPED_GENE or OPPOSITE_STRAND_SKIP — structural flags where
+## direct co-transcription evidence can override the concern. LOW_COV and other
+## evidence-quality flags are never rescued: a spanning read confirms
+## co-transcription but does not substitute for missing protein tiling support.
 ## Default: no (conservative — skip_flags are always respected)
 ## Recommended: yes when IsoSeq data is available and max_dist > 2
 ## Caveat: FULL_SPAN is coordinate-based only (no MAPQ in GFF). For paralogous
