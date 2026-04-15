@@ -29,8 +29,8 @@ the entire locus end-to-end.
 
 |  | `spanning_rescue=no` | `spanning_rescue=yes` | rescue gain |
 |---|---|---|---|
-| **max_dist=4** | 992 PASS / 35 REVIEW | 1021 PASS / 59 REVIEW | **+29 PASS** |
-| **max_dist=2** | 994 PASS / 35 REVIEW | 1020 PASS / 59 REVIEW | **+26 PASS** |
+| **max_dist=4** | 992 PASS / 35 REVIEW | 1011 PASS / 36 REVIEW | **+19 PASS** |
+| **max_dist=2** | 994 PASS / 35 REVIEW | 1009 PASS / 36 REVIEW | **+15 PASS** |
 
 Two findings stand out immediately:
 
@@ -39,9 +39,10 @@ Two findings stand out immediately:
    more candidates, but those extra candidates are filtered out by `SKIPPED_GENE`
    at roughly the same rate, leaving net output nearly identical.
 
-2. **`spanning_rescue` is the larger lever.** Enabling it adds ~27 PASS merges
-   regardless of `max_dist`, recovering IsoSeq-confirmed merges that the
-   skip_flags gate would otherwise discard.
+2. **`spanning_rescue` is the larger lever.** Enabling it adds 15–19 PASS merges
+   depending on `max_dist`, recovering IsoSeq-confirmed merges that the
+   skip_flags gate would otherwise discard. The REVIEW count is essentially
+   unchanged (35 → 36) — rescue is clean.
 
 ---
 
@@ -88,10 +89,10 @@ to merging cleanly. This correction prevents 18 false alarms per run.
 
 ## Effect of `spanning_rescue`
 
-`spanning_rescue = yes` rescues any merge that skip_flags would block, provided
-its `isoseq_flag` is `FULL_SPAN`. A long-read transcript spanning the entire
-locus end-to-end is treated as direct co-transcription evidence, overriding the
-skip even when a same-strand gene intervenes.
+`spanning_rescue = yes` rescues merges blocked by `SKIPPED_GENE` or
+`OPPOSITE_STRAND_SKIP` when `isoseq_flag` is `FULL_SPAN`. It does **not**
+rescue `LOW_COV` or other evidence-quality flags — a spanning read confirms
+co-transcription but does not substitute for missing protein tiling support.
 
 ### IsoSeq status of SKIPPED_GENE candidates
 
@@ -111,25 +112,26 @@ the terminal gene.
 
 | | max_dist=4 rescue | max_dist=2 rescue |
 |---|---|---|
-| Total merges rescued (all skip_flags) | 53 | 50 |
-| → PASS | 29 | 26 |
-| → REVIEW | 24 | 24 |
+| Total merges rescued | 20 | 16 |
+| → PASS | 19 | 15 |
+| → REVIEW | 1 | 1 |
 | → FAIL | 0 | 0 |
 
-No rescued merges fail translation validation. The REVIEW outcomes reflect
-borderline MSA junction scores — these are not failures but cases where the
-junction evidence is near the threshold.
+No rescued merges fail translation validation. The single REVIEW at each
+distance is merge_569: a 3-gene SKIPPED_GENE,STRONG chain with a borderline
+second junction score (0.70) and merged protein coverage of 55.9% — just
+below `min_merged_cov = 0.60`. This is a pre-existing borderline case, not
+a rescue-specific problem.
 
 ### Overlap between the two rescue runs
 
-Of the 53 merges rescued at max_dist=4 and 50 at max_dist=2:
+Of the 20 merges rescued at max_dist=4 and 16 at max_dist=2:
 
-- **49 rescued in both** — the core SKIPPED_GENE + FULL_SPAN pairs that exist
+- **16 rescued in both** — the core SKIPPED_GENE + FULL_SPAN pairs that exist
   at both distance settings
 - **4 rescued only at max_dist=4** — all PASS; gene fragments too far apart at
   the tighter distance to form a chain at all
-- **1 rescued only at max_dist=2** — PASS; a 2-gene sub-chain that is subsumed
-  into a larger chain at max_dist=4
+- **0 rescued only at max_dist=2**
 
 ---
 
@@ -153,14 +155,6 @@ at all. At max_dist=2, none of the four gene sets appear as candidates.
 opposite-strand interleaved genes in a gene-dense interval) and **ELP1**
 (13 reads, single-copy gene) are the most straightforward rescues. **HSPA4L**
 and **MCF2L** involve paralogous gene families — see the caveat below.
-
-### The 1 merge uniquely recoverable at max_dist=2 + spanning_rescue
-
-At max_dist=2, the central two MCF2L fragments (CCA3g015955, 015956) form an
-independent 2-gene candidate with 55.8% ref coverage and are rescued as PASS.
-At max_dist=4, those same two fragments are subsumed into the larger 3-gene
-MCF2L chain (71.1% ref coverage) and never appear as an independent candidate.
-The 3-gene chain is the biologically superior merge.
 
 ---
 
@@ -196,8 +190,8 @@ does not eliminate risk from single chimeric reads.
 |---------|-------------|-------|
 | max_dist=2, no rescue | 994 | baseline |
 | max_dist=4, no rescue | 992 | −2 vs baseline |
-| max_dist=2, rescue | 1020 | +26 vs baseline |
-| **max_dist=4, rescue** | **1021** | **+27 vs baseline; +4 biologically important loci** |
+| max_dist=2, rescue | 1009 | +15 vs baseline |
+| **max_dist=4, rescue** | **1011** | **+17 vs baseline; +4 biologically important loci** |
 
 The 4 merges uniquely recovered at max_dist=4 + rescue are real multi-fragment
 gene loci that cannot be assembled at max_dist=2. The rescue mechanism provides
