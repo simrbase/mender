@@ -167,6 +167,107 @@ my $mafft_bin    = cfg("paths", "mafft_bin",    "") || "mafft";
 my $kalign_bin   = cfg("paths", "kalign_bin",   "") || "kalign";
 my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
 
+# ---------------------------------------------------------------------------
+# Config validation
+# ---------------------------------------------------------------------------
+{
+    my (@errors, @warnings);
+
+    # yes/no keys
+    my %yesno = (
+        fix_partial                => $fix_partial,
+        asym_trim                  => $asym_trim,
+        run_gt                     => $run_gt,
+        run_agat                   => $run_agat,
+        run_translation_validation => $run_transl_val,
+        no_msa                     => $tv_no_msa,
+        keep_msa                   => $tv_keep_msa,
+        final_gff_include_review   => $tv_final_incl_review,
+    );
+    for my $key (sort keys %yesno) {
+        push @errors, "$key: must be 'yes' or 'no', got '$yesno{$key}'"
+            unless $yesno{$key} =~ /^(yes|no)$/i;
+    }
+
+    # enum keys
+    if ($require_isoseq ne "") {
+        push @errors, "require_isoseq: must be FULL_SPAN, PARTIAL_SPAN, or NO_SPANNERS (or blank), got '$require_isoseq'"
+            unless $require_isoseq =~ /^(FULL_SPAN|PARTIAL_SPAN|NO_SPANNERS)$/;
+    }
+    push @errors, "aligner: must be mafft_fast, mafft_auto, or kalign3, got '$tv_aligner'"
+        unless $tv_aligner =~ /^(mafft_fast|mafft_auto|kalign3)$/;
+
+    # numeric keys
+    my %numeric = (
+        threads              => $threads,
+        min_tiling           => $min_tiling,
+        min_cov              => $min_cov,
+        max_dist             => $max_dist,
+        wiggle               => $wiggle,
+        asym_threshold       => $asym_threshold,
+        low_cov_thresh       => $low_cov_thresh,
+        isoseq_min_spanning  => $isoseq_min_span,
+        min_msa_refs         => $tv_min_msa_refs,
+        max_msa_refs         => $tv_max_msa_refs,
+        large_span_warn      => $large_span_warn,
+        large_span_hard      => $large_span_hard,
+    );
+    for my $key (sort keys %numeric) {
+        push @errors, "$key: must be numeric, got '$numeric{$key}'"
+            unless $numeric{$key} =~ /^-?\d+(\.\d+)?$/;
+    }
+
+    # 0-1 range
+    my %zeroone = (
+        min_junction_score => $tv_min_junction,
+        min_merged_cov     => $tv_min_mrgd_cov,
+        min_ref_cov        => $tv_min_ref_cov,
+        w_conservation     => $tv_w_conservation,
+        w_continuity       => $tv_w_continuity,
+        w_gap              => $tv_w_gap,
+    );
+    for my $key (sort keys %zeroone) {
+        my $val = $zeroone{$key};
+        if ($val !~ /^\d+(\.\d+)?$/) {
+            push @errors, "$key: must be numeric (0-1), got '$val'";
+        } elsif ($val < 0 || $val > 1) {
+            push @errors, "$key: must be between 0 and 1, got '$val'";
+        }
+    }
+
+    # MSA weights must sum to 1.0
+    my $wsum = $tv_w_conservation + $tv_w_continuity + $tv_w_gap;
+    push @errors, sprintf("w_conservation + w_continuity + w_gap must sum to 1.0, got %.4f", $wsum)
+        if abs($wsum - 1.0) > 0.001;
+
+    # flag name validation in skip_flags / flags (warn only — unknown flags are skipped silently
+    # at runtime, so this catches typos before the run wastes time)
+    my %known_flags = map { $_ => 1 } qw(
+        CLEAN STRONG SINGLE_HIT WEAK_END WEAK_INTERNAL LOW_COV
+        SKIPPED_GENE TRANSITIVE_JOIN MULTI_ISOFORM_JOIN LARGE_SPAN LARGE_SPAN_EXTREME
+    );
+    for my $item (["skip_flags", $skip_flags], ["flags", $flags]) {
+        my ($key, $val) = @$item;
+        next if $val eq "all" || $val eq "";
+        for my $flag (split /,/, $val) {
+            $flag =~ s/^\s+|\s+$//g;
+            push @warnings, "$key: unknown flag '$flag'"
+                unless $known_flags{$flag};
+        }
+    }
+
+    if (@warnings) {
+        print "WARNING: config issue in $config_file:\n";
+        print "  $_\n" for @warnings;
+        print "\n";
+    }
+    if (@errors) {
+        print "ERROR: invalid config in $config_file:\n";
+        print "  $_\n" for @errors;
+        die "\nAborting — fix the config errors above before running.\n";
+    }
+}
+
 # intermediate file paths
 my $clean_fa         = "$workdir/protein.nostops.fa";
 my $diamond_db       = "$db_dir/subject.dmnd";

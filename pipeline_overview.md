@@ -7,17 +7,6 @@ fragments that together tile a single reference ortholog — and are
 optionally confirmed by a spanning long-read transcript — are merged into
 one corrected gene model.
 
-Box style legend:
-
-```
-  ╔══════════╗   runs in every execution
-  ╚══════════╝
-
-  ┌╌╌╌╌╌╌╌╌╌╌┐   conditional — trigger shown in the step label
-  └╌╌╌╌╌╌╌╌╌╌┘
-```
-
----
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
@@ -48,13 +37,13 @@ Box style legend:
 ╚══════════════════════════════════════════════════════════════╝
                               │
 ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┐
-╎  STEP 3 — ISOSEQ OVERLAP MAPPING  [ if isoseq_gff is set ]  ╎
+╎  STEP 3 — ISOSEQ OVERLAP MAPPING  [ isoseq_gff is set ]      ╎
 ╎                                                              ╎
 ╎  · bedtools intersect: finds which long-read transcript      ╎
 ╎    models co-localize with each annotated gene model         ╎
 ╎  · Produces the read-to-gene overlap table used in step 5    ╎
 └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
-                              │
+                              ║
 ╔══════════════════════════════════════════════════════════════╗
 ║  STEP 4 — FIND SPLIT-GENE CANDIDATES  (find_split_genes.pl)  ║
 ║                                                              ║
@@ -79,10 +68,10 @@ Box style legend:
 ╚══════════════════════════════════════════════════════════════╝
                               │
 ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┐
-╎  STEP 5 — ISOSEQ VALIDATION  [ if isoseq_gff is set ]       ╎
+╎  STEP 5 — ISOSEQ VALIDATION  [ isoseq_gff is set ]           ╎
 ╎           (uses output from steps 3 and 4)                   ╎
 ╎                                                              ╎
-╎  · Count long-read transcripts spanning 2+ genes per locus  ╎
+╎  · Count long-read transcripts spanning 2+ genes per locus   ╎
 ╎    — molecular evidence of co-transcription across           ╎
 ╎    adjacent gene fragments                                   ╎
 ╎                                                              ╎
@@ -95,7 +84,7 @@ Box style legend:
 ╔══════════════════════════════════════════════════════════════╗
 ║  STEP 6 — MERGE  (merge_split_genes.pl)                      ║
 ║                                                              ║
-║  · Filter candidates by flags, coverage, tiling hits, and   ║
+║  · Filter candidates by flags, coverage, tiling hits, and    ║
 ║    IsoSeq status  (see merge filters table below)            ║
 ║  · PARTIAL_SPAN: optionally trim unsupported terminal genes  ║
 ║    before merging  (fix_partial = yes)                       ║
@@ -104,16 +93,17 @@ Box style legend:
 ║    features in genomic order; recalculate CDS phase          ║
 ║  · Assign new IDs; tag merged genes with source=Mender       ║
 ╚══════════════════════════════════════════════════════════════╝
-                              ║
-╔══════════════════════════════════════════════════════════════╗
-║  STEP 7 — GT GFF3 CHECK  (fast, non-fatal)                   ║
-║                                                              ║
-║  · GFF3 spec validation on Mender-created genes only         ║
-║  · Isolates merge-introduced errors from pre-existing ones   ║
-╚══════════════════════════════════════════════════════════════╝
                               │
 ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┐
-╎  STEP 8 — TRANSLATION VALIDATION                            ╎
+╎  STEP 7 — GT GFF3 CHECK  (fast, non-fatal)                   ╎
+╎           [ run_gt = yes ]                                   ╎
+╎                                                              ╎
+╎  · GFF3 spec validation on Mender-created genes only         ╎
+╎  · Isolates merge-introduced errors from pre-existing ones   ╎
+└╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
+                              │
+┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┐
+╎  STEP 8 — TRANSLATION VALIDATION                             ╎
 ╎           [ run_translation_validation = yes ]               ╎
 ╎                                                              ╎
 ╎  · Translate merged CDS sequences with gffread               ╎
@@ -130,7 +120,7 @@ Box style legend:
 └╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┘
                               │
 ┌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┐
-╎  STEP 9 — AGAT GENE-MODEL CHECK  [ run_agat = yes ]         ╎
+╎  STEP 9 — AGAT GENE-MODEL CHECK  [ run_agat = yes ]          ╎
 ╎           (runs on PASS GFF; or full merged GFF if step      ╎
 ╎            8 was skipped)                                    ╎
 ╎                                                              ╎
@@ -198,7 +188,7 @@ flags are comma-separated in the `flag` column.
 | `flags` | Include only candidates matching this flag (`all` = no filter) | `all` |
 | `min_tiling` | Minimum `max_tiling_hits` to process a candidate | `1` |
 | `min_cov` | Minimum combined reference coverage % | `0` |
-| `require_isoseq` | Restrict to candidates with this IsoSeq flag (`FULL_SPAN`, `PARTIAL_SPAN`, `none`) | _(all)_ |
+| `require_isoseq` | Restrict to candidates with this IsoSeq flag (`FULL_SPAN`, `PARTIAL_SPAN`, `NO_SPANNERS`) | _(all)_ |
 | `isoseq_min_spanning` | Minimum number of spanning reads required | `0` |
 | `fix_partial` | Auto-trim unsupported terminal genes in `PARTIAL_SPAN` candidates | `yes` |
 | `asym_trim` | Trim/split chains at weak asymmetric junctions during step 4 | `yes` |

@@ -19,6 +19,12 @@ For a worked example comparing reference proteome choices and a recommended
 two-pass strategy, see
 [case_study_reference_comparison.md](case_study_reference_comparison.md).
 
+For a consolidated table of all flags across all pipeline steps, see
+[flags_reference.md](flags_reference.md).
+
+For a full reference of every config key with defaults and valid values, see
+[config_reference.md](config_reference.md).
+
 ---
 
 ## Contents
@@ -30,9 +36,10 @@ two-pass strategy, see
 - [How the Protein Homology Analysis Works](#how-the-protein-homology-analysis-works)
 - [Scripts](#scripts)
 - [Output File Column Reference](#output-file-column-reference)
-- [Flag Definitions](#flag-definitions)
+- [Flag Definitions](#flag-definitions) — see also [flags_reference.md](flags_reference.md) for a consolidated single-table view
 - [New Gene ID Templates](#new-gene-id-templates)
 - [Without IsoSeq](#without-isoseq)
+- [Config Reference](config_reference.md) — full table of all config keys with defaults
 
 ---
 

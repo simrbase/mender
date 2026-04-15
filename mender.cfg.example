@@ -256,7 +256,7 @@ min_cov = 0
 
 ## require_isoseq: only process rows with this exact isoseq_flag value.
 ## Leave blank to process all rows regardless of IsoSeq status.
-## Options: FULL_SPAN, PARTIAL_SPAN, none
+## Options: FULL_SPAN, PARTIAL_SPAN, NO_SPANNERS
 ## Example: require_isoseq = FULL_SPAN  — only IsoSeq-confirmed merges
 require_isoseq =
 
