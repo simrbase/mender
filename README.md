@@ -569,7 +569,7 @@ Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
 |------|---------|
 | `FULL_SPAN` | At least one read spans all genes — strong confirmation |
 | `PARTIAL_SPAN` | Reads exist but none reach a terminal gene — structural signal that a terminal gene may not belong. Use `--fix_partial` to auto-trim. |
-| `NO_SPANNERS` | No spanning reads found — may reflect expression stage, not gene structure. Not a negative result. |
+| `NO_SPANNERS` | No spanning reads found — reads may be present on individual fragments but none bridge more than one gene. May reflect expression timing or tissue, not gene structure. Not a negative result. |
 
 ### Translation validation flags (`report.tsv`)
 

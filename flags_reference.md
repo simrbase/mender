@@ -36,7 +36,7 @@ of `isoseq_validated.txt`). Controlled by `require_isoseq` and
 |------|---------|-------------|
 | `FULL_SPAN` | ≥1 long-read transcript spans all genes in the locus — strong co-transcription evidence | `require_isoseq` |
 | `PARTIAL_SPAN` | Spanning reads exist but none reach a terminal gene — terminal fragment may not belong; use `fix_partial = yes` to auto-trim | `require_isoseq` |
-| `NO_SPANNERS` | No spanning reads found — may reflect expression timing or tissue, not gene structure. Not a negative result. | `require_isoseq` |
+| `NO_SPANNERS` | No spanning reads found — reads may be present on individual fragments but none bridge more than one gene. May reflect expression timing or tissue, not gene structure. Not a negative result. | `require_isoseq` |
 
 ---
 
