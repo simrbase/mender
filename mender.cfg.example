@@ -245,8 +245,11 @@ large_span_hard = 2000000
 flags = all
 
 ## min_tiling: minimum max_tiling_hits value to process a merge candidate.
-## 1 = no minimum (process all). Higher values require stronger protein evidence.
-## Suggested: 1 (rely on IsoSeq and flags instead)
+## 1 = no minimum (process all). Higher values require more supporting reference
+## proteins — but hit count reflects reference proteome depth (isoform count,
+## copy number) as much as candidate quality. Single-copy genes will always score
+## low regardless of how real the split is. Rely on flags (STRONG, SINGLE_HIT)
+## and IsoSeq instead. Suggested: 1
 min_tiling = 1
 
 ## min_cov: minimum combined_cov_pct to process a merge candidate.

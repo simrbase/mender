@@ -52,7 +52,7 @@ section. Copy `mender.cfg.example` to a project-specific name before editing.
 |-----|-----------------|---------|-------|
 | `skip_flags` | Exclude candidates whose `flag` column contains any of these | `SKIPPED_GENE,LOW_COV` | Comma-separated. See [flags_reference.md](flags_reference.md) for all filterable flags |
 | `flags` | Include only candidates matching this flag | `all` | `all` = no include filter. Example: `flags = STRONG` to merge only high-confidence candidates |
-| `min_tiling` | Minimum `max_tiling_hits` to process a candidate | `1` | 1 = no minimum. Higher values require stronger protein evidence |
+| `min_tiling` | Minimum `max_tiling_hits` to process a candidate | `1` | 1 = no minimum. Higher values require more supporting reference proteins, but hit count reflects reference proteome depth (isoform count, copy number) as much as candidate quality — single-copy genes always score low regardless of how real the split is. Rely on flags instead |
 | `min_cov` | Minimum combined reference coverage % to process a candidate | `0` | 0 = no minimum. 60 is redundant when `LOW_COV` is already in `skip_flags` |
 | `require_isoseq` | Only process candidates with this exact `isoseq_flag` | _(blank = all)_ | Options: `FULL_SPAN`, `PARTIAL_SPAN`, `NO_SPANNERS` |
 | `isoseq_min_spanning` | Minimum number of spanning IsoSeq reads required | `0` | 0 = no minimum. Only meaningful when `isoseq_gff` is set |
