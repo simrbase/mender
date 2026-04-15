@@ -18,7 +18,8 @@ and `flags` in the `[merge_filters]` config section.
 | `WEAK_END` | A terminal junction has 1–2 tiling hits but survived asymmetric trimming | `skip_flags`, `flags` |
 | `WEAK_INTERNAL` | An internal junction has 1–2 tiling hits but survived chain splitting | `skip_flags`, `flags` |
 | `LOW_COV` | Combined reference coverage <60% — more likely domain sharing than a split gene | `skip_flags`, `flags` |
-| `SKIPPED_GENE` | A non-adjacent gene sits inside the merge locus — review the `skipped_genes` column before merging | `skip_flags`, `flags` |
+| `SKIPPED_GENE` | A non-adjacent **same-strand** gene sits inside the merge locus — the skipped gene may be an additional split fragment; review the `skipped_genes` column before merging. In `skip_flags` by default. Rescuable with `spanning_rescue = yes` if `isoseq_flag` is `FULL_SPAN`. | `skip_flags`, `flags` |
+| `OPPOSITE_STRAND_SKIP` | A non-adjacent gene sits inside the merge locus, but **all** skipped genes are on the opposite strand — these are unrelated interleaved genes and do not affect the validity of the merge. Not in `skip_flags` by default. | `skip_flags`, `flags` |
 | `TRANSITIVE_JOIN` | One or more consecutive gene pairs in the chain have no direct pairwise tiling evidence; the chain connection is inferred transitively. `STRONG,TRANSITIVE_JOIN` warrants the same scrutiny as `WEAK_END` | `skip_flags`, `flags` |
 | `MULTI_ISOFORM_JOIN` | At least one source gene has >1 transcript; the merged gene will contain cross-product isoform combinations not all of which are biologically real | `skip_flags`, `flags` |
 | `LARGE_SPAN` | Merged locus genomic span exceeds `large_span_warn` (default 500 kb). Plausible for some gene families; review with IsoSeq for weak-evidence merges | `skip_flags`, `flags` |

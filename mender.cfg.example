@@ -231,6 +231,15 @@ fix_partial = yes
 ##
 skip_flags = SKIPPED_GENE,LOW_COV
 
+## spanning_rescue: if yes, rescue merges that would be excluded by skip_flags
+## but have FULL_SPAN IsoSeq support. This allows SKIPPED_GENE (or any other
+## flagged) merges to be included when a single IsoSeq read spans the entire
+## locus end-to-end, providing direct transcript evidence regardless of the
+## intervening gene structure.
+## Default: no (conservative — skip_flags are always respected)
+## Recommended: yes when IsoSeq data is available and max_dist > 2
+spanning_rescue = no
+
 ## large_span_warn: merged locus genomic span (bp) above which LARGE_SPAN is flagged.
 ## Set to 0 to disable. Default: 500000 (500 kb).
 large_span_warn = 500000

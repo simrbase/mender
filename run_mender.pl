@@ -127,6 +127,7 @@ my $min_tiling         = cfg("merge_filters", "min_tiling",         "1");
 my $min_cov            = cfg("merge_filters", "min_cov",            "0");
 my $require_isoseq     = cfg("merge_filters", "require_isoseq",     "");
 my $isoseq_min_span    = cfg("merge_filters", "isoseq_min_spanning","0");
+my $spanning_rescue    = cfg("merge_filters", "spanning_rescue",    "no");
 my $asym_trim          = cfg("merge_filters", "asym_trim",          "yes");
 my $large_span_warn    = cfg("merge_filters", "large_span_warn",    "500000");
 my $large_span_hard    = cfg("merge_filters", "large_span_hard",    "2000000");
@@ -244,7 +245,7 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
     # at runtime, so this catches typos before the run wastes time)
     my %known_flags = map { $_ => 1 } qw(
         CLEAN STRONG SINGLE_HIT WEAK_END WEAK_INTERNAL LOW_COV
-        SKIPPED_GENE TRANSITIVE_JOIN MULTI_ISOFORM_JOIN LARGE_SPAN LARGE_SPAN_EXTREME
+        SKIPPED_GENE OPPOSITE_STRAND_SKIP TRANSITIVE_JOIN MULTI_ISOFORM_JOIN LARGE_SPAN LARGE_SPAN_EXTREME
     );
     for my $item (["skip_flags", $skip_flags], ["flags", $flags]) {
         my ($key, $val) = @$item;
@@ -434,6 +435,7 @@ print "DB dir:          $db_dir\n";
 print "Gene template:   $gene_template\n";
 print "Trans template:  $trans_template\n";
 print "Skip flags:      $skip_flags\n";
+print "Spanning rescue: $spanning_rescue\n";
 print "Fix partial:     $fix_partial\n";
 print "Large span warn: $large_span_warn bp\n";
 print "Large span hard: $large_span_hard bp\n";
@@ -703,6 +705,7 @@ if ($run_steps{6}) {
     my $merge_cmd = "$perl_bin $merge_script";
     $merge_cmd .= " --fix_partial"              if $fix_partial eq "yes";
     $merge_cmd .= " --skip_flags $skip_flags"   if $skip_flags;
+    $merge_cmd .= " --spanning_rescue"          if $spanning_rescue eq "yes";
     $merge_cmd .= " --flags $flags"             if $flags && $flags ne "all";
     $merge_cmd .= " --min_tiling $min_tiling"   if $min_tiling > 1;
     $merge_cmd .= " --min_cov $min_cov"         if $min_cov > 0;
@@ -1084,6 +1087,7 @@ if ($run_steps{9}) {
     $r->("");
     $r->("[merge_filters]");
     $r->("  skip_flags:                 $skip_flags");
+    $r->("  spanning_rescue:            $spanning_rescue");
     $r->("  flags:                      " . cfg("merge_filters", "flags", "all"));
     $r->("  fix_partial:                $fix_partial");
     $r->("  min_tiling:                 " . cfg("merge_filters", "min_tiling", "1"));

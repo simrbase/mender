@@ -339,11 +339,19 @@ use Getopt::Long qw(GetOptions);
 ##                          Recommended to skip_flags in production runs.
 ##
 ##     SKIPPED_GENE       : a non-adjacent gene sits inside the merge locus
-##                          (genomic_dist > 1 for at least one junction). The
-##                          skipped gene may be an additional split fragment that
-##                          failed filters, a different gene, or an artifact.
-##                          Check skipped_genes column and GFF before merging.
-##                          Recommended to skip_flags and review manually.
+##                          (genomic_dist > 1 for at least one junction) AND at
+##                          least one skipped gene is on the SAME strand as the
+##                          chain. The skipped gene may be an additional split
+##                          fragment that failed filters, a different gene, or
+##                          an artifact. Check skipped_genes column and GFF
+##                          before merging. Recommended to skip_flags and review
+##                          manually.
+##
+##     OPPOSITE_STRAND_SKIP : a non-adjacent gene sits inside the merge locus,
+##                          but ALL skipped genes are on the OPPOSITE strand.
+##                          These are unrelated interleaved genes and do not
+##                          affect the validity of the merge. Not included in
+##                          skip_flags by default.
 ##
 ##     MULTI_ISOFORM_JOIN : at least one source gene has more than one annotated
 ##                          transcript. The merged gene will be built by cross-
@@ -454,12 +462,18 @@ use Getopt::Long qw(GetOptions);
 ##
 ##     LOW_COV            : best_combined_cov_pct < 60%
 ##
-##     SKIPPED_GENE       : at least one junction spans a non-adjacent gene.
+##     SKIPPED_GENE       : at least one junction spans a non-adjacent same-strand
+##                          gene. See SKIPPED_GENE description in the 2-gene section.
+##
+##     OPPOSITE_STRAND_SKIP : all skipped genes at non-adjacent junctions are on
+##                          the opposite strand; does not affect merge validity.
 ##
 ##   Interpreting combinations:
 ##     STRONG                         -> act on this merge
 ##     STRONG,SKIPPED_GENE            -> strong evidence but check skipped gene;
 ##                                       it may need to be added to the merge
+##     STRONG,OPPOSITE_STRAND_SKIP    -> skipped gene is on opposite strand;
+##                                       safe to merge (spanning_rescue can help)
 ##     STRONG,TRANSITIVE_JOIN         -> inspect the ? junction carefully;
 ##                                       require IsoSeq if possible
 ##     SINGLE_HIT                     -> inspect hit_desc and pident; see above
@@ -1093,9 +1107,17 @@ sub compute_flags {
     # LOW_COV applies to all chain sizes
     push @flags, "LOW_COV" if $best_pct < $low_cov_thresh;
 
-    # SKIPPED_GENE: any junction with genomic dist > 1
+    # SKIPPED_GENE / OPPOSITE_STRAND_SKIP: any junction with genomic dist > 1.
+    # If ALL skipped genes are on the opposite strand from the chain, flag as
+    # OPPOSITE_STRAND_SKIP (interleaved unrelated genes; not a concern for the
+    # merge itself).  If ANY skipped gene is on the same strand, flag as
+    # SKIPPED_GENE (may be an additional split fragment — review before merging).
     my @skipped = get_skipped_genes(@ordered);
-    push @flags, "SKIPPED_GENE" if @skipped;
+    if (@skipped) {
+        my $chain_strand = $locs{$ordered[0]}{strand};
+        my $any_same     = grep { ($locs{$_}{strand} // "") eq $chain_strand } @skipped;
+        push @flags, ($any_same ? "SKIPPED_GENE" : "OPPOSITE_STRAND_SKIP");
+    }
 
     # MULTI_ISOFORM_JOIN: any source gene has more than one annotated transcript.
     # The merge script builds transcripts by cross-product (N*M combinations).

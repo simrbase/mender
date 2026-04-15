@@ -184,6 +184,18 @@ use warnings;
 ##       input.gff \
 ##       output.gff
 ##
+## Rescue SKIPPED_GENE merges that have FULL_SPAN IsoSeq support:
+##
+##   perl merge_split_genes.pl \
+##       --fix_partial \
+##       --skip_flags SKIPPED_GENE,LOW_COV \
+##       --spanning_rescue \
+##       --gene_template  "CCA3g1[GCOUNT:6]000" \
+##       --trans_template "CCA3t1[GCOUNT:6][TCOUNT:3]" \
+##       isoseq_validated.txt \
+##       input.gff \
+##       output.gff
+##
 ## Conservative run — only IsoSeq-confirmed merges, STRONG protein evidence,
 ## skip PARTIAL_SPAN, SKIPPED_GENE, LOW_COV:
 ##
@@ -242,6 +254,7 @@ my $min_cov           = 0;
 my $require_isoseq    = "";
 my $isoseq_min_span   = 0;
 my $fix_partial       = 0;
+my $spanning_rescue   = 0;
 my $removed_file      = "removed_genes.gff";
 my $dry_run           = 0;
 my $date              = strftime("%Y-%m-%d", localtime);
@@ -293,6 +306,7 @@ GetOptions(
     "require_isoseq=s"     => \$require_isoseq,
     "isoseq_min_spanning=i"=> \$isoseq_min_span,
     "fix_partial"          => \$fix_partial,
+    "spanning_rescue"      => \$spanning_rescue,
     "removed=s"            => \$removed_file,
     "dry_run"              => \$dry_run,
     "date=s"               => \$date,
@@ -477,6 +491,9 @@ while (my $mline = <MERGE>) {
     for my $sf (@skip_flag_list) {
         if ($flag =~ /\b\Q$sf\E\b/) { $skip = 1; last; }
     }
+    # --spanning_rescue: if a merge would be skipped but has FULL_SPAN IsoSeq
+    # support, rescue it regardless of which skip_flag triggered.
+    if ($skip && $spanning_rescue && $isoseq_flag eq "FULL_SPAN") { $skip = 0; }
     if ($skip) { $n_skipped++; next; }
 
     # numeric filters

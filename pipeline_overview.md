@@ -166,7 +166,8 @@ flags are comma-separated in the `flag` column.
 
 | Flag | Meaning | Default action |
 |---|---|---|
-| `SKIPPED_GENE` | A non-adjacent gene sits inside the merge locus — review before merging | **skip** |
+| `SKIPPED_GENE` | A non-adjacent **same-strand** gene sits inside the merge locus — review before merging | **skip** |
+| `OPPOSITE_STRAND_SKIP` | All skipped genes at non-adjacent junctions are on the opposite strand — interleaved unrelated genes; does not affect merge validity | pass |
 | `TRANSITIVE_JOIN` | One or more junctions in the chain lack direct pairwise tiling; connection inferred through a shared neighbour | review |
 | `MULTI_ISOFORM_JOIN` | ≥1 source gene has multiple transcripts; merged gene will contain cross-product isoforms | review |
 | `LARGE_SPAN` | Merged locus exceeds `large_span_warn` (default 500 kb) | review |
@@ -187,6 +188,7 @@ flags are comma-separated in the `flag` column.
 | Parameter | What it controls | Default |
 |---|---|---|
 | `skip_flags` | Exclude candidates whose flag column contains any of these | `SKIPPED_GENE,LOW_COV` |
+| `spanning_rescue` | If `yes`, rescue FULL_SPAN IsoSeq–confirmed merges even if a `skip_flags` term matches | `no` |
 | `flags` | Include only candidates matching this flag (`all` = no filter) | `all` |
 | `min_tiling` | Minimum `max_tiling_hits` to process a candidate | `1` |
 | `min_cov` | Minimum combined reference coverage % | `0` |
@@ -380,12 +382,18 @@ candidates should be added to `skip_flags` unless independent evidence
 confirms the merge. Both thresholds are configurable via
 `--large_span_warn` and `--large_span_extreme`.
 
-A related flag, `SKIPPED_GENE`, is raised when a non-nested intervening
-gene sits between the two fragments (i.e., `genomic_dist > 1`). This gene
-may be an additional split fragment that failed filters, an unrelated gene,
-or an artifact — the `skipped_genes` column in the merge table records its
-ID for manual inspection. `SKIPPED_GENE` candidates are recommended for
-`skip_flags` and manual review before merging.
+Two related flags cover the case where a non-adjacent gene sits between
+fragments (`genomic_dist > 1`). If any such intervening gene is on the
+**same strand** as the chain, `SKIPPED_GENE` is raised — that gene may be
+an additional split fragment that failed filters, and the `skipped_genes`
+column records its ID for manual inspection. `SKIPPED_GENE` candidates are
+recommended for `skip_flags` and manual review before merging. If IsoSeq
+data is available and the merge has `FULL_SPAN` support, setting
+`spanning_rescue = yes` in the config will rescue it regardless of the
+`skip_flags` setting. If **all** intervening genes are on the opposite
+strand, `OPPOSITE_STRAND_SKIP` is raised instead — these are merely
+interleaved unrelated genes and do not affect merge validity; the flag is
+not in `skip_flags` by default.
 The key measure is
 `combined_cov_pct`: the span from the leftmost alignment start to the
 rightmost alignment end on the reference protein, divided by the reference
