@@ -1,115 +1,348 @@
-# Case Study: Anolis carolinensis vs UniProt SwissProt as Mender Reference Proteome
+# Case Study: Choosing a Reference Proteome for Mender
 
-## Summary
-
-Two Mender runs on the *Chamaeleo calyptratus* CCA3 annotation were compared:
-one using *Anolis carolinensis* as the reference proteome, one using UniProt
-SwissProt. The runs found 773 shared merge candidates and diverged on 238
-Anole-only and 157 SwissProt-only merges. Contrary to expectation, SwissProt
-did not collapse `max_tiling_hits` — multi-species depth compensates for
-within-species non-redundancy. Neither reference alone is sufficient: Anolis
-detects lineage-specific splits SwissProt cannot see; SwissProt detects
-conserved splits where the Anolis model is also fragmented. Concatenating the
-two databases into a single blast subject is shown to be a poor approach
-because it destroys the calibration of the hit-count thresholds. The
-recommended strategy is a sequential two-pass run: Anolis first, then
-SwissProt on the updated annotation, which delivers both reference-specific
-merge sets in a single coherent workflow using no new code.
-
----
-
-**Genome:** *Chamaeleo calyptratus* CCA3 assembly  
-**Annotation:** CCA3-ref.merged.06192025.slim.gff  
-**IsoSeq:** CCA3C_isoseq.agat.mRNA.gff  
-**Run date:** 2026-04-14  
-**Pipeline version:** Mender, commit b837c42
-
----
-
-## Setup
-
-Two runs were performed with identical parameters except for `subject_fa` — the reference proteome used for diamond blastp in steps 2–4.
+## Runs compared
 
 | Config | Reference | Run prefix |
-|---|---|---|
-| `chacal_anole.cfg` | *Anolis carolinensis* Ensembl AnoCar2.0v2 all-isoform proteome | 20260414 |
-| `chacal_sp.cfg` | UniProt SwissProt (2026 release, all taxa) | CCA3_sp |
+|--------|-----------|------------|
+| `chacal_anole.cfg` | *Anolis carolinensis* Ensembl AnoCar2.0v2 all-isoform proteome | `20260414` |
+| `chacal_sp.cfg` | UniProt SwissProt (2026 release, all taxa) | `CCA3_sp` |
 
-All other parameters were identical: `skip_flags = SKIPPED_GENE,LOW_COV`, `asym_trim = yes`, `asym_threshold = 6`, `min_tiling = 1`. Both runs used the same SwissProt FASTA for step 8 MSA reference sequences (`swissprot_fa`), so MSA scoring was directly comparable.
+All other parameters were identical: `skip_flags = SKIPPED_GENE,LOW_COV`,
+`asym_trim = yes`, `asym_threshold = 6`, `min_tiling = 1`. Both runs used the
+same SwissProt FASTA for step 8 MSA scoring (`swissprot_fa`), so translation
+validation was directly comparable.
 
 ---
+
+## Background: What the Reference Proteome Does
+
+The reference proteome is the diamond blastp subject used in step 2 to identify
+which gene models in the annotation share sequence similarity to the same protein.
+Two models that each cover non-overlapping regions of the same reference protein
+are the basic unit of split-gene detection. The reference therefore determines
+what splits are *detectable at all*.
+
+Two properties drive the tradeoff between reference choices:
+
+**Coverage of the target genome's gene space** — a close relative's proteome
+contains sequences for lineage-specific and diverged genes that pan-vertebrate
+databases lack. A pan-vertebrate database covers conserved genes the close
+relative's annotation may miss because it is itself fragmented.
+
+**Number of independent sequences per gene** — each independent protein that
+tiles a junction adds one to `max_tiling_hits`, pushing candidates from
+SINGLE_HIT into CLEAN or STRONG. Anolis isoforms add depth for a single species;
+SwissProt orthologs from multiple vertebrates add depth across phylogenetic
+breadth. These produce different flag distributions with different biological
+meanings.
+
+---
+
+# Part 1: Choosing Your Reference Proteome
+
+*For users setting up a new Mender run and deciding what to use as the blast
+reference.*
 
 ## Top-level results
 
-| | Anole | SwissProt |
+| | Anolis | SwissProt |
 |---|---|---|
-| Step 4 candidates | 1123 | 1030 |
-| Processed after skip_flags | 1011 | 930 |
+| Step 4 candidates | 1,123 | 1,030 |
+| Processed after skip_flags | 1,011 | 930 |
 | PASS | 977 (96.6%) | 905 (97.3%) |
 | REVIEW | 34 (3.4%) | 25 (2.7%) |
 | FAIL | 0 | 0 |
-| Runtime | 3m 19s | 4m 25s |
 
-Both runs had zero FAIL results. All candidates passed translation (translation_flag = OK throughout). The slight difference in PASS rate (96.6% vs 97.3%) reflects the different candidate pools, not a quality difference between the runs.
-
----
+Both runs produce 0 FAIL results. The difference in candidate count reflects
+different detection coverage, not quality.
 
 ## Merge candidate overlap
-
-```bash
-# Extract source_genes column from each report.tsv and sort
-awk -F'\t' 'NR>1 {print $3}' results/20260414/report.tsv | sort > /tmp/anole_genes.txt
-awk -F'\t' 'NR>1 {print $3}' results/CCA3_sp/report.tsv  | sort > /tmp/sp_genes.txt
-
-# Overlap counts
-comm -12 /tmp/anole_genes.txt /tmp/sp_genes.txt | wc -l   # shared
-comm -23 /tmp/anole_genes.txt /tmp/sp_genes.txt | wc -l   # Anole only
-comm -13 /tmp/anole_genes.txt /tmp/sp_genes.txt | wc -l   # SP only
-```
 
 | Category | Count |
 |---|---|
 | Shared by both runs | 773 |
-| Anole only | 238 |
+| Anolis only | 238 |
 | SwissProt only | 157 |
 
-The comparison is by the exact comma-separated source gene list (e.g., `CCA3g000003000.1,CCA3g000004000.1`). Two merges that share individual genes but have different chain boundaries are counted as non-overlapping here; the chain-boundary analysis below handles those separately.
+Neither reference finds all merges. 238 splits are visible only via Anolis; 157
+are visible only via SwissProt. A single-reference run misses one of these sets
+entirely.
+
+## Why each reference detects a unique set
+
+**Anolis carolinensis** detects splits in genes that have diverged from
+pan-vertebrate orthologs or evolved within the squamate lineage. For a chameleon
+gene with no close SwissProt entry, Anolis is the only reference that can tile
+the junction. Lineage-specific gene expansions — duplicated or rapidly evolving
+families unique to reptiles — are accessible only via a close relative.
+
+**UniProt SwissProt** detects splits in ancient, conserved vertebrate genes.
+The power comes from phylogenetic depth: a gene split in the chameleon whose
+ortholog is intact in human, mouse, chicken, and zebrafish generates four
+independent SwissProt tiling hits, each contributing to `max_tiling_hits`.
+This is why SwissProt-only merges are CLEAN-dominated (108/157, 69%) while
+Anolis-only merges are SINGLE_HIT-dominated (137/238, 58%): conserved genes
+accumulate depth from vertebrate diversity; lineage-specific genes do not.
+
+**The most important point:** if the Anolis annotation is itself fragmented at
+a locus, Anolis cannot detect the split. The tiling algorithm requires a
+reference protein that spans the junction between two chameleon fragments. If
+the Anolis ortholog is split by the same annotation error, individual Anolis
+fragments tile against each chameleon fragment separately but never bridge the
+gap. SwissProt detects those loci because curated entries are drawn from
+experimentally characterized proteins — intact, full-length sequences regardless
+of what any one annotation looks like. The 157 SwissProt-only merges are not a
+failure of Anolis sensitivity; they reflect a fundamental limit of using a draft
+annotation as the sole reference.
+
+## max_tiling_hits: the opposite shift from expectation
+
+SwissProt was expected to collapse `max_tiling_hits` because it is non-redundant
+within each species. The opposite occurred.
+
+| max_tiling_hits | Anolis | SwissProt |
+|---|---|---|
+| 1 | 437 (39%) | 94 (9%) |
+| 2 | 201 | 157 |
+| 3 | 122 | 142 |
+| 4 | 93 | 128 |
+| 5–6 | 93 | 151 |
+| 7+ | 177 | 358 |
+
+SwissProt has far fewer single-hit candidates (9% vs 39%) and a higher
+distribution overall. SwissProt's non-redundancy is per-species, not per-gene
+family. A conserved split gene accumulates one tiling hit per species that has
+an intact ortholog — a gene with representatives in human, mouse, rat, chicken,
+and zebrafish reaches max_tiling=5 from SwissProt alone.
+
+The thresholds CLEAN (≥2 hits), STRONG (≥3 hits), and the asymmetric trim
+cutoff (≥6) are meaningful in both runs, but their biological interpretation
+differs: Anolis hit counts reflect within-species isoform redundancy; SwissProt
+hit counts reflect phylogenetic breadth across vertebrates.
+
+## Why not combine the two databases?
+
+The straightforward workaround — concatenating Anolis and SwissProt into a single
+blast subject — does not work. `max_tiling_hits` counts become incoherent: a
+conserved gene accumulates hits from both Anolis isoforms and SwissProt orthologs
+across many species, potentially reaching max_tiling=30 or higher; a
+lineage-specific gene still hits 1–2 sequences. The dynamic range expands by an
+order of magnitude and the CLEAN, STRONG, and asymmetric trim thresholds — all
+calibrated assuming consistent per-gene copy number within a single database —
+lose their meaning. Candidates from conserved gene families are systematically
+over-flagged relative to lineage-specific candidates.
+
+## The sequential two-pass strategy
+
+The correct approach is to run the pipeline twice in sequence: close relative
+first, then SwissProt against the updated annotation. This requires no new code.
+
+After pass 1, all Anolis-detectable merges are resolved and written to
+`validated.gff`. The 157 SwissProt-only gene pairs remain as unmerged fragments
+in the updated annotation — Anolis had no evidence for them and did not modify
+them. Pass 2 detects them normally, treating the updated annotation as input.
+
+The sequential approach also enables **emergent chain extension** beyond what
+either single-pass run can find. In 9 cases (SP_SUPERSET), Anolis detected and
+merged a 2-gene core (A+B). The individual fragments A and B were too short or
+too diverged for a SwissProt reference to extend the chain to a third fragment C.
+After merging, the AB protein is longer, covers more of the reference, and may
+cross the tiling threshold. Pass 2 can then detect AB→C — a chain that neither
+standalone run could produce.
+
+### Setting up pass 2
+
+**1. Regenerate the proteome from pass 1 output:**
+
+```bash
+gffread results/20260414/validated.gff \
+  -g /path/to/genome.fasta \
+  -y mender_workdir/proteome_pass2.fa
+```
+
+`gffread` translates CDS features from the updated GFF. The output includes
+merged proteins from pass 1 alongside all unmodified gene proteins.
+
+**2. Configure pass 2** — create `chacal_sp_pass2.cfg`:
+
+```ini
+gff         = results/20260414/validated.gff
+proteome_fa = mender_workdir/proteome_pass2.fa
+subject_fa  = /path/to/uniprot_sprot.fasta
+run_prefix  = CCA3_sp_pass2
+```
+
+All other parameters carry over from `chacal_sp.cfg`. Use a new `run_prefix` so
+pass 2 outputs land in `results/CCA3_sp_pass2/` without overwriting pass 1.
+
+**3. Run pass 2:**
+
+```bash
+perl run_mender.pl --config chacal_sp_pass2.cfg
+```
+
+The pass 2 `validated.gff` is the final annotation — it contains pass 1 merges
+plus all new pass 2 merges. No GFF merging step is needed.
+
+## Reference choice by scenario
+
+| Scenario | Recommended approach |
+|---|---|
+| Genome with a well-annotated close relative available | Close relative first, SwissProt second pass |
+| Poorly annotated or deeply diverged genome | SwissProt first (or only); close-relative annotation may be too fragmented to bridge junctions |
+| No IsoSeq data | Both passes; rely primarily on Tier 1 (shared) and SP-only CLEAN merges (see Part 2) |
+| Gene family study with high paralogy risk | Close relative only, `min_tiling = 2`; SwissProt phylogenetic depth not needed and increases false-positive risk |
 
 ---
 
-## Anole-only merges (238)
+# Part 2: Reviewing Your Results — Confidence Tiers and REVIEW Calls
+
+*For users who have run one or both passes and are reviewing their output.*
+
+## Confidence tiers
+
+Merge candidates can be stratified by the number of independent lines of evidence
+supporting them. The table below uses the CCA3 dataset as a concrete example.
+
+| Tier | Criteria | Count (CCA3) | Evidence basis |
+|---|---|---|---|
+| 1 | Shared by both runs | 773 | Two independent protein sources agree |
+| 2 | Anole-only, FULL_SPAN IsoSeq | 145 | Lineage-specific or diverged gene, confirmed by spanning transcript |
+| 3 | SP-only, CLEAN + FULL_SPAN | 73 | Multi-species protein signal + IsoSeq spanning |
+| 4 | SP-only, PASS, no IsoSeq | 74 | Conserved gene, protein-only evidence |
+| 5 | Anole-only, NO_SPANNERS | 91 | Single or double Anolis hit, no transcriptome support |
+
+Tiers 1–3 (991 merges) have compound evidence from at least two independent
+sources. These are the merges to accept without hesitation. Tiers 4–5 rest on a
+single evidence type.
+
+**Tier 5 warrants specific scrutiny.** These 91 Anolis-only merges have no
+spanning transcripts and often a single Anolis protein tiling the junction.
+At this evidence level, misassembly, transposable element insertion, or genuine
+tandem duplication are plausible alternatives to a split gene. Setting
+`min_tiling = 2` would remove most Tier 5 candidates; whether that is appropriate
+depends on how well Anolis covers the chameleon gene space.
+
+**IsoSeq support rates** across both unique sets are similar: 61% of Anole-only
+merges (145/238) have FULL_SPAN support; 62% of SP-only merges (98/157) have
+FULL_SPAN support. The NO_SPANNERS fraction is 38% in both sets — the same
+biological problem appears regardless of reference.
+
+## REVIEW calls in both runs
+
+Both runs show the same bimodal pattern in min_junction_score for REVIEW calls:
+a cluster at 0.41–0.50 (genuinely borderline junctions) and a cluster at 0.70–0.99
+(cases where a secondary flag triggered REVIEW despite a clean MSA — e.g.,
+GOOD_MSA_LOW_REF or WEAK_JUNCTION). Reference choice does not meaningfully
+change the REVIEW rate or its cause. The triage approach from the SKIPPED_GENE
+case study (open the `_aligned.fa` file; check whether source genes independently
+span the full reference) applies equally to REVIEW calls from either run.
+
+## How chain-boundary conflicts resolve in the sequential run
+
+20 SP-only merge groups share individual gene IDs with Anole merge groups, but
+have different chain boundaries. All resolve in the sequential run without
+intervention:
+
+| Conflict type | Count | How it resolves |
+|---|---|---|
+| SP_SUBSET: SP chain is a subset of a longer Anole chain | 10 | Anole merged those genes in pass 1; they no longer exist individually in pass 2 — the longer chain stands |
+| SP_SUPERSET: SP extends an Anole pair by ≥1 gene | 9 | Pass 2 runs against the merged AB protein; may extend the chain to ABC if the merged protein crosses the tiling threshold |
+| DIFFERENT_CHAIN: overlapping genes, different boundaries | 1 | One gene was consumed by a different Anole merge in pass 1; pass 2 cannot reconstruct the SP pair |
+
+The DIFFERENT_CHAIN case (CCA3g018495/496/497) requires manual inspection to
+determine which merge boundary is correct.
+
+## Cases requiring manual review
+
+**6-gene chain (CCA3g011919–011924):** REVIEW in the SwissProt run,
+min_junction_score = 0.605. Six-fragment splits are uncommon and this junction
+score is below threshold — inspect in the genome browser before including.
+
+**DIFFERENT_CHAIN locus (CCA3g018495/496/497):** One gene was consumed by an
+Anole merge with a different neighbor in pass 1. The SwissProt pair cannot be
+reconstructed in pass 2. Inspect both candidate merges at this locus manually.
+
+## SKIPPED_GENE candidates are not resolved by reference choice
+
+All 42 Anolis SKIPPED_GENE candidates appear with the same flag in the SwissProt
+run. Zero were cleared. Every intervening gene at these loci is a conserved
+vertebrate gene with SwissProt entries — none are squamate-specific novelties
+invisible to SwissProt. The SKIPPED_GENE flag fires on genomic position, not
+blast evidence: changing the reference proteome will not remove it. The only
+routes to recovering SKIPPED_GENE candidates are `spanning_rescue = yes` with
+IsoSeq data, or removing `SKIPPED_GENE` from `skip_flags` (see the SKIPPED_GENE
+case study).
+
+---
+
+## Practical recommendations
+
+**For most vertebrate genome annotations:** run Anolis (or the closest available
+relative) first, then SwissProt on the updated annotation. This is the recommended
+production workflow.
+
+**If no close-relative proteome is available:** a single SwissProt run is
+sufficient for conserved genes. Lineage-specific splits will be missed, but
+without a close relative there is no other option.
+
+**After both passes:** stratify your merges by confidence tier before making
+annotation decisions. Tiers 1–3 can be accepted. Tiers 4–5 warrant a closer look,
+particularly any Anole-only SINGLE_HIT merges without transcriptome support.
+
+**For CCA3, the recommended workflow is:**
+
+1. Pass 1: `perl run_mender.pl --config chacal_anole.cfg`
+2. Regenerate proteome with `gffread` from `results/20260414/validated.gff`
+3. Pass 2: `perl run_mender.pl --config chacal_sp_pass2.cfg`
+4. Final annotation: `results/CCA3_sp_pass2/validated.gff`
+
+Manually review the 6-gene chain (CCA3g011919–011924) and the DIFFERENT_CHAIN
+locus (CCA3g018495/496/497) before finalizing.
+
+---
+
+# Methods: Reproducing the Comparison Analysis
+
+All commands assume you are in the mender working directory and that the two
+runs are at `results/20260414/` (Anolis) and `results/CCA3_sp/` (SwissProt).
+Adjust paths to match your run prefixes.
+
+## 1. Merge candidate overlap
+
+Extract the source-gene list (column 3) from each report and find the shared,
+Anole-only, and SP-only sets by exact gene-list match.
 
 ```bash
-comm -23 /tmp/anole_genes.txt /tmp/sp_genes.txt > /tmp/anole_only.txt
+awk -F'\t' 'NR>1 {print $3}' results/20260414/report.tsv | sort > /tmp/anole_genes.txt
+awk -F'\t' 'NR>1 {print $3}' results/CCA3_sp/report.tsv  | sort > /tmp/sp_genes.txt
 
-# Flag distribution
+comm -12 /tmp/anole_genes.txt /tmp/sp_genes.txt | wc -l   # shared
+comm -23 /tmp/anole_genes.txt /tmp/sp_genes.txt | wc -l   # Anole only
+comm -13 /tmp/anole_genes.txt /tmp/sp_genes.txt | wc -l   # SP only
+
+comm -23 /tmp/anole_genes.txt /tmp/sp_genes.txt > /tmp/anole_only.txt
+comm -13 /tmp/anole_genes.txt /tmp/sp_genes.txt > /tmp/sp_only.txt
+```
+
+## 2. Flag distributions for unique sets
+
+```bash
+# Anole-only flag distribution
 awk -F'\t' 'NR>1 {print $3,$NF}' OFS='\t' results/20260414/work/merge_candidates.txt \
   | grep -Ff /tmp/anole_only.txt | awk -F'\t' '{print $2}' | sort | uniq -c | sort -rn
 
-# max_tiling_hits distribution
-awk -F'\t' 'NR>1 {print $3,$15}' OFS='\t' results/20260414/work/merge_candidates.txt \
-  | grep -Ff /tmp/anole_only.txt | awk -F'\t' '{print $2}' | sort -n | uniq -c
+# SP-only flag distribution
+awk -F'\t' 'NR>1 {print $3,$NF}' OFS='\t' results/CCA3_sp/work/merge_candidates.txt \
+  | grep -Ff /tmp/sp_only.txt | awk -F'\t' '{print $2}' | sort | uniq -c | sort -rn
 ```
 
-| Flag | Count |
-|---|---|
-| SINGLE_HIT | 137 |
-| CLEAN | 77 |
-| WEAK_END | 7 |
-| STRONG | 5 |
-| LARGE_SPAN | 4 |
-| others | 8 |
+## 3. IsoSeq support for Anole-only merges
 
-`max_tiling_hits` is heavily concentrated at 1 (143 of 238), with a long tail to 23.
-
-These are splits detectable from the Anolis proteome but not from SwissProt. The most likely explanations: the gene is lineage-specific or sufficiently diverged that SwissProt has no close ortholog above the e-value cutoff, or the gene family is represented in SwissProt by a single canonical sequence that aligns to only one fragment.
-
-The SINGLE_HIT dominance is expected: the Anolis Ensembl proteome includes many isoforms per gene, but for any given split gene the relevant protein is typically one specific paralog or isoform. For lineage-specific genes there is only one Anolis sequence to detect the split.
-
-### IsoSeq support for Anole-only merges
+Column 20 of `isoseq_validated.txt` holds the span flag (FULL_SPAN, PARTIAL_SPAN,
+NO_SPANNERS). Column 20 of `report.tsv` holds the validation result.
 
 ```bash
-# Cross merge flags with IsoSeq flags for Anole-only merges
 awk -F'\t' 'NR>1 {print $3,$NF}' OFS='\t' \
     results/20260414/work/merge_candidates.txt | sort > /tmp/anole_merge_flags.txt
 awk -F'\t' 'NR>1 {print $3,$20}' OFS='\t' \
@@ -122,62 +355,7 @@ join -t$'\t' /tmp/ao_mflags.txt /tmp/ao_iflags.txt \
   | awk -F'\t' '{print $2,$3}' OFS='\t' | sort | uniq -c | sort -rn
 ```
 
-| Merge flag | FULL_SPAN | PARTIAL_SPAN | NO_SPANNERS |
-|---|---|---|---|
-| SINGLE_HIT | 91 | 0 | 46 |
-| CLEAN | 45 | 0 | 32 |
-| STRONG | 2 | 1 | 2 |
-| WEAK_END | 5 | 1 | 1 |
-| LARGE_SPAN | 2 | 0 | 2 |
-| others | 0 | 0 | 5 |
-| **Total** | **145 (61%)** | **2 (1%)** | **91 (38%)** |
-
-61% of Anole-only merges have full IsoSeq spanning support. The 91 SINGLE_HIT + FULL_SPAN cases are particularly informative: a single Anolis protein provides the tiling signal and IsoSeq reads independently confirm that a transcript crosses the junction. Spanning read counts for those 91 range from 1 to 22, with a median around 7.
-
-```bash
-# Spanning read counts for SINGLE_HIT + FULL_SPAN Anole-only merges
-awk -F'\t' 'NR>1 {print $3,$NF}' OFS='\t' \
-    results/20260414/work/merge_candidates.txt \
-  | grep -Ff /tmp/anole_only.txt | grep 'SINGLE_HIT' | cut -f1 \
-  > /tmp/anole_only_singlehit.txt
-
-grep -Ff /tmp/anole_only_singlehit.txt results/20260414/work/isoseq_validated.txt \
-  | awk -F'\t' '$20=="FULL_SPAN" {print $18}' | sort -n | uniq -c
-```
-
-The 45 CLEAN + FULL_SPAN Anole-only merges are the strongest tier within this set: ≥2 Anolis tiling hits plus spanning transcriptome evidence, for genes that SwissProt cannot see at all.
-
-The 91 NO_SPANNERS in the Anole-only set (46 SINGLE_HIT + 32 CLEAN + 13 other) have no transcriptome confirmation and thin protein evidence. These are the candidates most deserving of scrutiny before inclusion.
-
----
-
-## SwissProt-only merges (157)
-
-```bash
-comm -13 /tmp/anole_genes.txt /tmp/sp_genes.txt > /tmp/sp_only.txt
-
-# Flag distribution
-awk -F'\t' 'NR>1 {print $3,$NF}' OFS='\t' results/CCA3_sp/work/merge_candidates.txt \
-  | grep -Ff /tmp/sp_only.txt | awk -F'\t' '{print $2}' | sort | uniq -c | sort -rn
-
-# Validation results
-awk -F'\t' 'NR>1 {print $3,$20}' OFS='\t' results/CCA3_sp/report.tsv \
-  | grep -Ff /tmp/sp_only.txt | awk -F'\t' '{print $2}' | sort | uniq -c
-```
-
-| Flag | Count |
-|---|---|
-| CLEAN | 108 |
-| SINGLE_HIT | 33 |
-| STRONG | 4 |
-| LARGE_SPAN | 4 |
-| others | 8 |
-
-Validation: 147 PASS, 10 REVIEW, 0 FAIL.
-
-SwissProt found these merges because the split gene has orthologs across multiple vertebrate lineages, each contributing an independent tiling hit. For a gene split in the chameleon annotation whose ortholog is intact in human, mouse, chicken, and zebrafish, four SwissProt sequences tile the junction. The CLEAN-heavy flag distribution (108/157) and high PASS rate reflect this multi-species signal quality.
-
-### IsoSeq support for SP-only merges
+## 4. IsoSeq support for SP-only merges
 
 ```bash
 awk -F'\t' 'NR>1 {print $3,$NF}' OFS='\t' \
@@ -192,52 +370,56 @@ join -t$'\t' /tmp/so_mflags.txt /tmp/so_iflags.txt \
   | awk -F'\t' '{print $2,$3}' OFS='\t' | sort | uniq -c | sort -rn
 ```
 
-| Merge flag | FULL_SPAN | PARTIAL_SPAN | NO_SPANNERS |
-|---|---|---|---|
-| CLEAN | 73 | 0 | 35 |
-| SINGLE_HIT | 21 | 0 | 12 |
-| STRONG | 2 | 0 | 2 |
-| LARGE_SPAN | 1 | 0 | 7 |
-| others | 1 | 0 | 3 |
-| **Total** | **98 (62%)** | **0** | **59 (38%)** |
+## 5. max_tiling_hits distributions
 
-73 of the 157 SP-only merges are CLEAN + FULL_SPAN: multi-species SwissProt tiling signal plus IsoSeq transcripts spanning the junction. These are splits that the Anolis proteome cannot detect at all, yet both an independent transcriptomic and a multi-species protein signal confirm them. This is the most important tier of the SP-only set.
-
----
-
-## Are SP-only merges independent of Anole merges?
-
-The source-gene-list comparison above counts chains as non-overlapping even if they share individual genes. To check for true redundancy, individual gene IDs were compared across all merge groups.
+Column 15 of `merge_candidates.txt` is `max_tiling_hits`.
 
 ```bash
-# Expand all source_genes to individual gene IDs
+awk -F'\t' 'NR>1 {print $15}' results/20260414/work/merge_candidates.txt \
+  | sort -n | uniq -c
+
+awk -F'\t' 'NR>1 {print $15}' results/CCA3_sp/work/merge_candidates.txt \
+  | sort -n | uniq -c
+```
+
+## 6. Individual gene overlap check
+
+This tests whether SP-only chains share any individual gene IDs with Anole chains
+(not just identical chain lists).
+
+```bash
+# Expand SP-only chains to individual gene IDs
 awk -F'\t' 'NR>1 {print $3}' results/CCA3_sp/report.tsv \
   | grep -Ff /tmp/sp_only.txt | tr ',' '\n' | sort -u \
   > /tmp/sp_only_individual_genes.txt
 
+# Expand all Anole chains to individual gene IDs
 awk -F'\t' 'NR>1 {print $3}' results/20260414/report.tsv \
   | tr ',' '\n' | sort -u \
   > /tmp/anole_all_individual_genes.txt
 
-# Overlap
-comm -12 /tmp/sp_only_individual_genes.txt /tmp/anole_all_individual_genes.txt | wc -l
-comm -23 /tmp/sp_only_individual_genes.txt /tmp/anole_all_individual_genes.txt | wc -l
+comm -12 /tmp/sp_only_individual_genes.txt /tmp/anole_all_individual_genes.txt | wc -l  # shared
+comm -23 /tmp/sp_only_individual_genes.txt /tmp/anole_all_individual_genes.txt | wc -l  # SP-only exclusive
 ```
 
-- **291 of 331 individual genes** in SP-only merges appear nowhere in any Anole merge group. The Anole blast produced zero tiling evidence at those loci.
-- **40 individual genes** (from 20 SP-only merge groups) appear in an Anole merge group with a different chain boundary.
+## 7. Chain-boundary conflict classification
 
-Those 20 cases were classified by chain relationship:
+For each SP-only group that shares a gene with an Anole group, compare chain
+sizes to classify the relationship as SP_SUBSET, SP_SUPERSET, or DIFFERENT_CHAIN.
 
 ```bash
-# For each SP-only group that shares a gene with an Anole group,
-# compare chain sizes to classify the relationship
+# Build list of SP-only groups that share genes with Anole chains
+comm -12 /tmp/sp_only_individual_genes.txt /tmp/anole_all_individual_genes.txt \
+  | while read gene; do
+      grep -w "$gene" /tmp/sp_only.txt
+    done | sort -u > /tmp/sp_overlap_groups.txt
+
 while IFS= read -r sp_grp; do
   first_gene=$(echo "$sp_grp" | tr ',' '\n' | head -1)
   anole_grp=$(awk -F'\t' -v g="$first_gene" \
     'NR>1 {n=split($3,a,","); for(i=1;i<=n;i++) if(a[i]==g) print $3}' \
     results/20260414/report.tsv | head -1)
-  sp_count=$(echo "$sp_grp" | tr ',' '\n' | wc -l)
+  sp_count=$(echo "$sp_grp"   | tr ',' '\n' | wc -l)
   anole_count=$(echo "$anole_grp" | tr ',' '\n' | wc -l)
   if   [ "$sp_count" -lt "$anole_count" ]; then echo "SP_SUBSET"
   elif [ "$sp_count" -gt "$anole_count" ]; then echo "SP_SUPERSET"
@@ -246,259 +428,27 @@ while IFS= read -r sp_grp; do
 done < /tmp/sp_overlap_groups.txt | sort | uniq -c
 ```
 
-| Relationship | Count | Description |
-|---|---|---|
-| SP_SUBSET | 10 | SP supports a 2-gene pair that is the core of a longer Anole chain (3–4 genes) |
-| SP_SUPERSET | 9 | SP extends an Anole 2-gene pair to a 3–6 gene chain |
-| DIFFERENT_CHAIN | 1 | Overlapping but shifted pair at the same locus |
+## 8. REVIEW min_junction_score distributions
 
-No SP-only merge is a duplicate of an Anole merge. All 20 chain-boundary disagreements resolve cleanly in a sequential run (see below).
-
----
-
-## max_tiling_hits: opposite shift from expectation
-
-```bash
-# max_tiling_hits distributions
-awk -F'\t' 'NR>1 {print $15}' results/20260414/work/merge_candidates.txt \
-  | sort -n | uniq -c
-awk -F'\t' 'NR>1 {print $15}' results/CCA3_sp/work/merge_candidates.txt \
-  | sort -n | uniq -c
-```
-
-| max_tiling_hits | Anole | SwissProt |
-|---|---|---|
-| 1 | 437 (39%) | 94 (9%) |
-| 2 | 201 | 157 |
-| 3 | 122 | 142 |
-| 4 | 93 | 128 |
-| 5 | 49 | 85 |
-| 6 | 44 | 66 |
-| 7+ | 177 | 358 |
-
-SwissProt was expected to collapse `max_tiling_hits` because it is non-redundant within each species. The opposite occurred. SwissProt has far fewer single-hit candidates (9% vs 39%) and a substantially higher distribution overall. The reason: SwissProt's non-redundancy is per-species, not per-gene-family. A conserved split gene accumulates one tiling hit per species in SwissProt that has an intact ortholog. A gene with orthologs in human, mouse, rat, chicken, and zebrafish can reach max_tiling=5 from SwissProt alone.
-
-The concern about hit-count collapse was valid for the scenario of blasting against a non-redundant database of the *same* species. Against a pan-vertebrate database the multi-species depth compensates entirely.
-
-The thresholds CLEAN (≥2 hits), STRONG (≥3 hits), and asymmetric trim threshold (≥6 hits) are meaningful in both runs, but their biological interpretation differs: Anole hit counts reflect within-species isoform redundancy; SwissProt hit counts reflect phylogenetic breadth across vertebrates.
-
----
-
-## REVIEW merges
+Column 14 of `report.tsv` is `min_junction_score`. Column 20 is the validation
+result.
 
 ```bash
 awk -F'\t' 'NR>1 && $20=="REVIEW" {print $14}' results/20260414/report.tsv | sort -n
 awk -F'\t' 'NR>1 && $20=="REVIEW" {print $14}' results/CCA3_sp/report.tsv  | sort -n
 ```
 
-Both runs show the same bimodal pattern in min_junction_score for REVIEW calls: a cluster at 0.41–0.50 (genuinely borderline junction alignments) and a cluster at 0.70–0.99 (cases where a secondary flag triggered REVIEW despite a strong MSA score, e.g., GOOD_MSA_LOW_REF or WEAK_JUNCTION). Neither reference produces a meaningfully cleaner REVIEW set.
+## 9. SKIPPED_GENE flag cross-run check
 
----
-
-## SP_SUPERSET cases: extended chains
-
-Nine SP-only groups extend a known Anole pair by one or more terminal genes:
-
-| SP chain | Anole chain | SP result |
-|---|---|---|
-| CCA3g001382000.1–001384000.1 (3 genes) | CCA3g001382000.1–001383000.1 (2 genes) | PASS (min_j=0.979) |
-| CCA3g002419000.1–002422000.1 (3 genes) | CCA3g002420000.1–002422000.1 (2 genes) | PASS (min_j=0.966) |
-| CCA3g007623000.1–007626000.1 (4 genes) | CCA3g007623000.1–007624000.1 (2 genes) | PASS (min_j=0.700) |
-| CCA3g011919000.1–011924000.1 (6 genes) | not detected | REVIEW (min_j=0.605) |
-
-The 3- and 4-gene supersets have high junction scores and PASS cleanly. The 6-gene chain is a REVIEW — six-fragment splits are uncommon and warrant manual inspection. These cases illustrate a real limitation of single-reference runs: when an individual terminal fragment is too short or too diverged for the reference to tile with confidence, Anolis truncates the chain. The multi-species depth of SwissProt bridges those junctions.
-
----
-
-## Why not combine the two databases?
-
-The straightforward workaround — concatenating the Anolis proteome and SwissProt into a single blast subject — does not work well. `max_tiling_hits` counts become incoherent across the combined database. A conserved gene accumulates hits from both Anolis isoforms and SwissProt orthologs across many species, potentially reaching max_tiling=30 or higher. A lineage-specific gene still hits 1–2 sequences. The dynamic range expands by an order of magnitude and the thresholds that define CLEAN, STRONG, and the asymmetric trim cutoff — all calibrated assuming consistent per-gene copy number within a single database — lose their meaning. Candidates from conserved gene families become systematically over-flagged relative to lineage-specific candidates, and the flag stratification that drives merge decisions breaks down.
-
----
-
-## Sequential runs: the correct approach
-
-The right way to capture both reference-specific merge sets is to run the pipeline twice, using the output of the first run as input to the second. This requires no new code — only a proteome regeneration step between passes.
-
-### Why sequential works where combined databases do not
-
-After pass 1 (Anolis), the 1011 merged gene pairs are single entries in `validated.gff`. The 157 SP-only gene pairs are still present as unmerged fragments in the updated annotation — Anolis had no evidence for them and did not touch them. Pass 2 (SwissProt) runs the full pipeline against the updated annotation and detects those pairs exactly as a standalone SP run would, with one important addition: the SP_SUPERSET cases.
-
-In the SP_SUPERSET scenario, Anolis detected and merged a 2-gene core (A+B → AB) in pass 1. The individual fragments A and B may have been too short or too diverged for a SwissProt reference protein to tile with a third fragment C. After merging, the AB protein is longer and covers more of the reference, potentially crossing the tiling threshold for junction A+B → C. Pass 2 can then detect AB+C as a new merge candidate — an extended chain that neither a standalone Anolis run nor a standalone SwissProt run could produce.
-
-### How the chain-boundary disagreements resolve
-
-The 20 SP-only groups that share individual genes with Anole chains resolve without intervention:
-
-- **10 SP_SUBSET cases:** The genes in the SP 2-gene pair were merged into a longer chain by Anole in pass 1. Those gene IDs no longer exist as individual entries in the updated annotation. Pass 2 does not see them as merge candidates. The longer Anole chain is the correct output.
-- **9 SP_SUPERSET cases:** Anole merged the 2-gene core in pass 1. Pass 2 runs against the merged protein and may extend the chain with the terminal fragment(s) that Anolis could not reach. The result is the full multi-gene chain that neither single pass could assemble alone.
-- **1 DIFFERENT_CHAIN case:** One gene from the SP pair was consumed by an Anole merge with a different neighbor. That gene no longer exists individually. Pass 2 does not reconstruct the SP pair. Manual review of this locus is warranted.
-
-### Steps between passes
-
-**1. Regenerate the proteome from the pass 1 output:**
+Verify that SKIPPED_GENE candidates are identical across both runs.
 
 ```bash
-gffread results/20260414/validated.gff \
-  -g /n/sci/SCI-004219-SBCHAMELEO/Chamaeleo_calyptratus/genomes/CCA3-ref/CCA3C.fasta \
-  -y mender_workdir/proteome_pass2.fa
+awk -F'\t' 'NR>1 && $NF~/SKIPPED_GENE/ {print $3}' \
+    results/20260414/work/merge_candidates.txt | sort > /tmp/anole_skipped.txt
+awk -F'\t' 'NR>1 && $NF~/SKIPPED_GENE/ {print $3}' \
+    results/CCA3_sp/work/merge_candidates.txt  | sort > /tmp/sp_skipped.txt
+
+comm -12 /tmp/anole_skipped.txt /tmp/sp_skipped.txt | wc -l  # shared (expect 42)
+comm -23 /tmp/anole_skipped.txt /tmp/sp_skipped.txt | wc -l  # Anole only (expect 0)
+comm -13 /tmp/anole_skipped.txt /tmp/sp_skipped.txt | wc -l  # SP only (expect 0)
 ```
-
-`gffread` translates CDS features from the updated GFF using the genome sequence. The output includes merged proteins from pass 1 alongside all unmodified source gene proteins.
-
-**2. Configure pass 2:**
-
-Create a new config (e.g., `chacal_sp_pass2.cfg`) with:
-
-```ini
-gff         = results/20260414/validated.gff
-proteome_fa = mender_workdir/proteome_pass2.fa
-subject_fa  = /path/to/uniprot_sprot.fasta
-run_prefix  = CCA3_sp_pass2
-```
-
-All other parameters carry over from `chacal_sp.cfg`. Use a distinct `run_prefix` so pass 2 outputs land in `results/CCA3_sp_pass2/` without overwriting anything.
-
-**3. Run pass 2:**
-
-```bash
-perl run_mender.pl --config chacal_sp_pass2.cfg
-```
-
-Pass 2 runs all 9 steps on the updated annotation. The diamond blast in step 2 uses the regenerated proteome as query and SwissProt as subject. Steps 3–5 use the updated GFF for IsoSeq intersections and split-gene detection. The full translation validation (step 8) and AGAT check (step 9) run on the pass 2 merges.
-
-**4. Combine final outputs:**
-
-The pass 2 `validated.gff` contains the pass 1 merges plus any new merges found by SwissProt. It is the final annotation. No merging of GFF files is needed — the sequential structure means pass 2 output is already the combined result.
-
----
-
-## Confidence tiers across both runs
-
-| Tier | Criteria | Count | Basis |
-|---|---|---|---|
-| 1 | Shared by both runs | 773 | Convergent protein evidence from single-species and pan-vertebrate reference |
-| 2 | Anole-only, FULL_SPAN IsoSeq | 145 | Thin or lineage-specific protein evidence, confirmed by spanning transcripts |
-| 3 | SP-only CLEAN+FULL_SPAN | 73 | Multi-species tiling signal, confirmed by spanning transcripts |
-| 4 | SP-only other PASS | 74 | Multi-species protein evidence, no IsoSeq support |
-| 5 | Anole-only, NO_SPANNERS | 91 | Protein-only, single or double Anolis hit, no transcriptome confirmation |
-
-Tiers 1–3 have compound evidence from at least two independent sources (protein tiling plus either multi-species convergence or IsoSeq). Tiers 4–5 rest on a single evidence type and warrant closer inspection before inclusion in a final annotation.
-
----
-
-## Biological Interpretation
-
-### What each reference is actually measuring
-
-The two proteomes are not interchangeable — they detect different classes of
-split gene.
-
-**Anolis carolinensis** detects splits in genes that have diverged from
-pan-vertebrate orthologs or evolved within the squamate lineage. For a
-chameleon gene with no close SwissProt entry, Anolis is the only reference
-that can tile the junction. Importantly, Anolis also covers lineage-specific
-gene expansions — duplicated or rapidly evolving gene families unique to
-reptiles that simply have no SwissProt representative.
-
-**UniProt SwissProt** detects splits in ancient, conserved vertebrate genes.
-The power comes from *phylogenetic depth*: a gene split in the chameleon
-whose ortholog is intact in human, mouse, chicken, and zebrafish generates
-four independent SwissProt tiling hits, each contributing independently to
-the `max_tiling_hits` score. This is why SwissProt produces a CLEAN-dominated
-candidate set (108/157, 69%) where Anolis is SINGLE_HIT-dominated (137/238,
-58%) — conserved genes get depth from vertebrate diversity, while the Anolis
-run is limited by the per-gene isoform count in a single species.
-
-### Why Anolis cannot see the SwissProt-only merges
-
-This is the most important biological point in this comparison: **if the
-Anolis annotation is also fragmented at a locus, Anolis cannot detect the
-split**. The tiling algorithm requires a reference protein to span the
-junction between two chameleon fragments. If the Anolis ortholog is itself
-split by the same annotation error, the individual Anolis fragments tile
-against each chameleon fragment separately but never bridge the gap.
-SwissProt detects those loci because curated SwissProt entries are drawn from
-experimentally characterised proteins — intact, full-length sequences regardless
-of what any one genome annotation looks like. The 157 SwissProt-only merges
-are not a failure of Anolis sensitivity; they are a fundamental limit of
-using a draft annotation as the sole reference.
-
-### What the confidence tiers mean for annotation decisions
-
-| Tier | Criteria | Biological meaning | Recommended action |
-|------|----------|-------------------|-------------------|
-| 1 | Shared by both runs (773) | Two independent protein sources agree. Virtually certain gene-model error. | Accept all |
-| 2 | Anole-only, FULL_SPAN IsoSeq (145) | Lineage-specific or diverged gene, confirmed by spanning transcript. | Accept |
-| 3 | SP-only, CLEAN + FULL_SPAN (73) | Ancient conserved gene, multi-species protein signal + IsoSeq spanning. | Accept |
-| 4 | SP-only, PASS, no IsoSeq (74) | Conserved gene, protein evidence only — no transcriptome confirmation. | Review; check genome browser |
-| 5 | Anole-only, NO_SPANNERS (91) | Thin protein evidence (often SINGLE_HIT), no transcriptome support. | Scrutinize; low-confidence merges |
-
-Tiers 1–3 (991 merges total) have compound evidence from at least two
-independent sources. These are the merges to accept without hesitation.
-Tiers 4–5 rest on a single evidence type and the annotation benefit of merging
-should be weighed against the risk of incorrectly collapsing two distinct genes.
-
-For CCA3 the Tier 5 set (91 Anole-only, NO_SPANNERS) deserves specific attention.
-These are primarily SINGLE_HIT merges where one Anolis protein tiles across the
-junction but no IsoSeq transcript confirms the join. At this evidence level, a
-misassembly in the genome, a transposable element insertion, or a genuine
-tandem duplicate are all plausible alternatives to a split gene. Applying a
-`min_tiling = 2` cutoff would remove most of these; whether that is appropriate
-depends on how well Anolis covers the chameleon gene space.
-
-### The sequential two-pass strategy is a genuine discovery mechanism
-
-The sequential approach is not merely a bookkeeping solution. After pass 1
-merges the Anolis-detectable splits, the merged AB protein is longer and
-covers more of the reference sequence. For the 9 SP_SUPERSET cases, the
-terminal fragment C was previously too short or too diverged to tile
-independently — below the detection threshold. The merged AB protein crosses
-that threshold and pass 2 detects an AB→C merge that no single-pass run
-could find. This is an emergent discovery: each pass expands the detectable
-merge space for the next. In principle, a third pass on the pass 2 output
-could recover further extended chains, though the CCA3 annotation likely
-has few if any remaining 5–6 fragment splits after two passes.
-
-### SKIPPED_GENE candidates are not resolved by reference choice
-
-An explicit comparison was run to test whether any of the 42 Anolis SKIPPED_GENE
-candidates would lose their flag in the SwissProt run — the hypothesis being that
-a lineage-specific intervening gene with no SwissProt hit would be invisible to
-the tiling logic and not trigger the flag.
-
-Result: all 42 SKIPPED_GENE chains appeared in the SwissProt run with
-`SKIPPED_GENE` still present. Zero were cleared. The SP run produced exactly
-42 SKIPPED_GENE candidates — the identical set. Every intervening gene at these
-loci is a conserved vertebrate gene with SwissProt entries; none are
-squamate-specific. The flag fires regardless of reference proteome.
-
-**The sequential two-pass approach does not rescue SKIPPED_GENE candidates.**
-The only route to recovering them is `spanning_rescue = yes` with IsoSeq data,
-which is independent of reference proteome choice entirely.
-
-### Reference choice by scenario
-
-| Scenario | Recommended reference | Rationale |
-|----------|-----------------------|-----------|
-| Well-annotated genome with close relative | Close relative first, then SwissProt second pass | Maximises lineage-specific detection; SwissProt catches conserved splits the relative misses |
-| Poorly annotated or deeply diverged genome | SwissProt first (or only) | Close-relative annotation may be too fragmented to be useful as a reference |
-| No IsoSeq data | Both passes, but promote Tier 1 and SP-only CLEAN only | Without transcriptome confirmation, require strong multi-hit protein signal |
-| Gene family study | Close relative, `min_tiling = 2`, no SwissProt | Reduces false positives from single-hit duplicates; SwissProt depth not needed |
-
----
-
-## Practical conclusions
-
-A single Anolis run captures the widest candidate set, including lineage-specific and diverged genes invisible to SwissProt. A single SwissProt run captures well-conserved genes with multi-species tiling support that Anolis misses. Neither run alone is sufficient.
-
-The sequential two-pass strategy — Anolis first, SwissProt second on the updated annotation — delivers both sets in a single coherent workflow with no new code. The pipeline handles chain-boundary conflicts automatically through the updated GFF: SP_SUBSET conflicts are resolved by the longer Anole chain, SP_SUPERSET cases become genuine chain extensions in pass 2, and the 137 SP-only merges fully absent from the Anole run are detected normally in pass 2 because their gene fragments are unchanged.
-
-For CCA3, the recommended workflow is:
-
-1. Run pass 1 with `chacal_anole.cfg` — produces `results/20260414/validated.gff`
-2. Regenerate proteome with `gffread`
-3. Run pass 2 with `chacal_sp_pass2.cfg` (SwissProt subject, updated GFF and proteome)
-4. Use `results/CCA3_sp_pass2/validated.gff` as the final annotation
-
-The 6-gene chain CCA3g011919–011924 (REVIEW) and the 1 DIFFERENT_CHAIN locus (CCA3g018495/496/497) should be reviewed manually regardless of pass 2 outcome.
