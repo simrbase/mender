@@ -968,13 +968,16 @@ for my $group (@merge_groups) {
         my @new_feat_lines;
         my %type_counter;
 
-        # compute the CDS span across all source transcripts so we can detect
-        # UTR features that have landed in the middle of the merged transcript
+        # compute the CDS span and intervals across all source transcripts.
+        # Used to detect and remove features that have landed in the middle of
+        # the merged transcript (internal UTRs and their source exons).
         my @all_cds = @{ $by_type{"CDS"} // [] };
         my ($min_cds, $max_cds);
+        my @cds_ivs;  # [ [start, end], ... ]
         if (@all_cds) {
-            $min_cds = (sort { $a <=> $b } map { (split "\t", $_)[3] } @all_cds)[0];
-            $max_cds = (sort { $b <=> $a } map { (split "\t", $_)[4] } @all_cds)[0];
+            @cds_ivs    = map { [(split "\t", $_)[3, 4]] } @all_cds;
+            $min_cds = (sort { $a <=> $b } map { $_->[0] } @cds_ivs)[0];
+            $max_cds = (sort { $b <=> $a } map { $_->[1] } @cds_ivs)[0];
         }
 
         # process in a defined order
@@ -982,11 +985,43 @@ for my $group (@merge_groups) {
             my @feats = @{ $by_type{$ftype} // [] };
             next unless @feats;
 
+            # Exon filtering/trimming: terminal UTR exons from source gene
+            # fragments end up internal after merging.  Fix them:
+            #   - Exons with NO CDS overlap that lie entirely within the merged
+            #     CDS span (have CDS on both sides) are dropped.
+            #   - Exons with partial CDS overlap that extend inward (toward the
+            #     interior of the CDS span on the non-terminal side) are trimmed
+            #     to the boundary of their overlapping CDS.
+            # Terminal UTR extensions at the true ends of the merged transcript
+            # (beyond min_cds or beyond max_cds) are always preserved.
+            if ($ftype eq "exon" && defined $min_cds && defined $max_cds) {
+                my @kept;
+                for my $exon_line (@feats) {
+                    my @ff = split "\t", $exon_line;
+                    my ($ex_s, $ex_e) = @ff[3, 4];
+
+                    my @olap = grep { $_->[0] <= $ex_e && $_->[1] >= $ex_s } @cds_ivs;
+
+                    if (!@olap) {
+                        # no CDS overlap: drop if internal
+                        next if $ex_s > $min_cds && $ex_e < $max_cds;
+                    } else {
+                        # has CDS overlap: clip any inward UTR extension
+                        my $min_olap = (sort { $a <=> $b } map { $_->[0] } @olap)[0];
+                        my $max_olap = (sort { $b <=> $a } map { $_->[1] } @olap)[0];
+                        $ff[3] = $min_olap if $ex_s < $min_olap && $ex_s > $min_cds;
+                        $ff[4] = $max_olap if $ex_e > $max_olap && $ex_e < $max_cds;
+                        $exon_line = join "\t", @ff;
+                    }
+                    push @kept, $exon_line;
+                }
+                @feats = @kept;
+                next unless @feats;
+            }
+
             # UTR filtering: drop any UTR that has CDS on both sides of it.
-            # When two gene fragments are joined, the terminal UTR exons of each
-            # source gene end up inside the merged transcript.  Any UTR whose
-            # coordinates fall entirely within the merged CDS span (min_cds ..
-            # max_cds) is one of these internal artefacts and is discarded.
+            # After the exon fix above, explicit UTR features that AGAT or the
+            # source GFF carried are also cleaned up by the same rule.
             if (($ftype eq "five_prime_UTR" || $ftype eq "three_prime_UTR")
                     && defined $min_cds && defined $max_cds) {
                 @feats = grep {
