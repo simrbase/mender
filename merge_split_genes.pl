@@ -627,7 +627,7 @@ print LOG "## flags:          $flags_opt\n";
 print LOG "## min_tiling:     $min_tiling\n";
 print LOG "## min_cov:        $min_cov\n";
 print LOG "##\n";
-print LOG "## merge_id\tnew_gene_id\tsource_genes\n";
+print LOG "## merge_id\tcoords\tnew_gene_id\tsource_genes\n";
 
 # ---------------------------------------------------------------------------
 # Pass 2: load the full GFF into memory, grouped by gene
@@ -839,7 +839,7 @@ for my $group (@merge_groups) {
     # write to log (guard against duplicate writes)
     state %logged;
     unless ($logged{$merge_id}++) {
-        print LOG join("\t", $merge_id, $new_gene_id, join(",", @genes)), "\n";
+        print LOG join("\t", $merge_id, "$chr:$new_start..$new_end", $new_gene_id, join(",", @genes)), "\n";
     }
 
     # build merged_from list
