@@ -968,39 +968,30 @@ for my $group (@merge_groups) {
         my @new_feat_lines;
         my %type_counter;
 
-        # determine which source transcript is most upstream and downstream
-        # for UTR filtering — sort source_tids by transcript start coordinate
-        my @sorted_source_tids = sort {
-            (split "\t", $transcript_line{$a})[3]
-            <=>
-            (split "\t", $transcript_line{$b})[3]
-        } @source_tids;
-        my $most_upstream_tid   = $sorted_source_tids[0];
-        my $most_downstream_tid = $sorted_source_tids[-1];
+        # compute the CDS span across all source transcripts so we can detect
+        # UTR features that have landed in the middle of the merged transcript
+        my @all_cds = @{ $by_type{"CDS"} // [] };
+        my ($min_cds, $max_cds);
+        if (@all_cds) {
+            $min_cds = (sort { $a <=> $b } map { (split "\t", $_)[3] } @all_cds)[0];
+            $max_cds = (sort { $b <=> $a } map { (split "\t", $_)[4] } @all_cds)[0];
+        }
 
         # process in a defined order
         for my $ftype ("exon", "CDS", "five_prime_UTR", "three_prime_UTR") {
             my @feats = @{ $by_type{$ftype} // [] };
             next unless @feats;
 
-            # UTR filtering: only keep UTRs from the appropriate terminal transcript
-            # five_prime_UTR: only from the most upstream source transcript
-            # three_prime_UTR: only from the most downstream source transcript
-            # This prevents internal UTRs from split gene fragments appearing
-            # mid-transcript after merging
-            if ($ftype eq "five_prime_UTR") {
+            # UTR filtering: drop any UTR that has CDS on both sides of it.
+            # When two gene fragments are joined, the terminal UTR exons of each
+            # source gene end up inside the merged transcript.  Any UTR whose
+            # coordinates fall entirely within the merged CDS span (min_cds ..
+            # max_cds) is one of these internal artefacts and is discarded.
+            if (($ftype eq "five_prime_UTR" || $ftype eq "three_prime_UTR")
+                    && defined $min_cds && defined $max_cds) {
                 @feats = grep {
-                    my $fl = $_;
-                    my ($parent) = (split "\t", $fl)[8] =~ /Parent=([^;]+)/;
-                    defined $parent && $parent eq $most_upstream_tid;
-                } @feats;
-                next unless @feats;
-            }
-            elsif ($ftype eq "three_prime_UTR") {
-                @feats = grep {
-                    my $fl = $_;
-                    my ($parent) = (split "\t", $fl)[8] =~ /Parent=([^;]+)/;
-                    defined $parent && $parent eq $most_downstream_tid;
+                    my ($us, $ue) = (split "\t", $_)[3, 4];
+                    not ($us > $min_cds && $ue < $max_cds);
                 } @feats;
                 next unless @feats;
             }
