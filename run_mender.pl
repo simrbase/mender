@@ -866,6 +866,18 @@ if ($run_steps{9}) {
         print "INFO: pass GFF not found — running AGAT on full merged GFF\n";
         print "      (run step 8 first to validate on pass merges only)\n";
     } else {
+        # warn if pass.gff3 is older than merges.gff — step 8 may be stale
+        if (-f $output_gff) {
+            my $pass_mtime   = (stat($pass_gff))[9];
+            my $merges_mtime = (stat($output_gff))[9];
+            if ($pass_mtime < $merges_mtime) {
+                my $pass_ts   = strftime("%Y-%m-%d %H:%M:%S", localtime($pass_mtime));
+                my $merges_ts = strftime("%Y-%m-%d %H:%M:%S", localtime($merges_mtime));
+                print "WARNING: pass.gff3 ($pass_ts) is older than merges.gff ($merges_ts)\n";
+                print "         Step 8 may need to be re-run before step 9.\n";
+                print "         Re-run with: --steps 8,9\n";
+            }
+        }
         print "  Running AGAT on: $pass_gff\n";
     }
 
