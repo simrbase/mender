@@ -23,6 +23,7 @@ use warnings;
 ##   7  gt         run gt gff3validator on merged GFF (fast; catches frame issues)
 ##   8  transl     run validate_merge_translation.pl → pass/fail/review GFFs
 ##   9  agat       run agat validation on pass GFF only (slow)
+##   10 fasta      export protein/CDS/transcript FASTAs from final validated GFF
 ##
 ## If --steps is not specified, all applicable steps are run in order.
 ## Steps 3 and 5 are skipped automatically if isoseq_gff is not set.
@@ -296,12 +297,12 @@ if (defined $steps_opt) {
     }
     @steps_requested = sort { $a <=> $b } keys %run_steps;
     # steps not in --steps are "not requested"
-    for my $s (1..9) {
+    for my $s (1..10) {
         $step_skip{$s} = "not in --steps" unless $run_steps{$s};
     }
 } else {
-    $run_steps{$_} = 1 for (1..9);
-    @steps_requested = (1..9);
+    $run_steps{$_} = 1 for (1..10);
+    @steps_requested = (1..10);
 }
 
 # skip IsoSeq steps if no isoseq_gff provided
@@ -472,8 +473,8 @@ print "=" x 60, "\n";
     # gt: only if run_gt = yes (step 7)
     push @checks, [$gt_bin,       "gt",       $run_gt  !~ /^no$/i];
 
-    # gffread: only if translation validation is on (step 8)
-    push @checks, [$gffread_bin,  "gffread",  $run_transl_val !~ /^no$/i];
+    # gffread: needed for translation validation (step 8) or FASTA export (step 10)
+    push @checks, [$gffread_bin,  "gffread",  $run_transl_val !~ /^no$/i || $run_steps{10}];
 
     # mafft: only if translation validation is on, no_msa is off, and aligner is mafft_*
     push @checks, [$mafft_bin,    "mafft",    $run_transl_val !~ /^no$/i
@@ -1038,6 +1039,52 @@ if ($run_steps{9}) {
 }
 
 # ---------------------------------------------------------------------------
+# STEP 10: EXPORT FASTA FILES FROM FINAL VALIDATED GFF
+# ---------------------------------------------------------------------------
+if ($run_steps{10}) {
+    print "\n", "=" x 60, "\n";
+    print "STEP 10: EXPORT PROTEIN / CDS / TRANSCRIPT FASTAs\n";
+    print "=" x 60, "\n";
+
+    check_file($genome_fa, "genome_fa");
+
+    # Use validated.gff if present (built above), otherwise fall back to merges.gff
+    my $validated_gff = "$run_dir/validated.gff";
+    my $fasta_src_gff = (-f $validated_gff) ? $validated_gff : $output_gff;
+    if ($fasta_src_gff eq $output_gff) {
+        print "INFO: validated.gff not found — exporting from full merged GFF\n";
+        print "      (run step 8 first to get a validated.gff)\n";
+    } else {
+        print "  Exporting FASTAs from: $fasta_src_gff\n";
+    }
+
+    check_file($fasta_src_gff, "GFF for FASTA export");
+
+    my $proteins_fa   = "$run_dir/validated.proteins.fa";
+    my $cds_fa        = "$run_dir/validated.cds.fa";
+    my $transcripts_fa = "$run_dir/validated.mrna.fa";
+
+    run_cmd(
+        "$gffread_bin $fasta_src_gff -g $genome_fa " .
+        "-y $proteins_fa " .
+        "-x $cds_fa " .
+        "-w $transcripts_fa",
+        "Export protein / CDS / transcript FASTAs via gffread"
+    );
+
+    unless ($dry_run) {
+        for my $f ($proteins_fa, $cds_fa, $transcripts_fa) {
+            if (-f $f) {
+                my $n = `grep -c '^>' $f 2>/dev/null` + 0;
+                printf "  %-46s  %d sequences\n", $f, $n;
+            } else {
+                print "  WARNING: expected output not found: $f\n";
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # RUN REPORT
 # ---------------------------------------------------------------------------
 # Written alongside the output GFF. Captures all parameters, step status,
@@ -1137,9 +1184,9 @@ if ($run_steps{9}) {
     my %step_names = (
         1 => "prepare",  2 => "diamond", 3 => "bedtools", 4 => "find",
         5 => "isoseq",   6 => "merge",   7 => "gt",       8 => "transl",
-        9 => "agat",
+        9 => "agat",    10 => "fasta",
     );
-    for my $s (1..9) {
+    for my $s (1..10) {
         my $name   = $step_names{$s};
         my $status = $run_steps{$s} ? "RUN" : "SKIPPED";
         my $reason = $step_skip{$s} ? "  ($step_skip{$s})" : "";
@@ -1184,7 +1231,10 @@ if ($run_steps{9}) {
         ["$tv_out/pass.gff3",           "PASS merges only"],
         ["$tv_out/review.gff3",         "REVIEW merges (borderline MSA score)"],
         ["$tv_out/fail.gff3",           "FAIL merges only"],
-        ["$tv_out/pass_proteins.fa",    "translated proteins for PASS merges"],
+        ["$tv_out/pass_proteins.fa",       "translated proteins for PASS merges (step 8)"],
+        ["$tv_out/validated.proteins.fa", "protein sequences for final validated GFF (step 10)"],
+        ["$tv_out/validated.cds.fa",      "CDS sequences for final validated GFF (step 10)"],
+        ["$tv_out/validated.mrna.fa",     "transcript sequences for final validated GFF (step 10)"],
         ["$run_workdir/merge_candidates.txt", "merge candidates from step 4"],
         ["$run_workdir/isoseq_validated.txt", "IsoSeq-validated merge table (step 5)"],
     );

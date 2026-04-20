@@ -76,7 +76,7 @@ there. Do not edit it directly; copy it to a project-specific name first.
 | `perl` | Run all scripts | yes |
 | `diamond` | blastp of query proteome vs reference | yes |
 | `bedtools` | IsoSeq read–gene overlap | only if `isoseq_gff` is set |
-| `gffread` | Translate merged and source CDS (Step 8) | only if translation validation is on |
+| `gffread` | Translate merged and source CDS (step 8); export protein/CDS/transcript FASTAs (step 10) | required for steps 8 and 10; skip both to avoid this dependency |
 | `mafft` | Multiple sequence alignment for junction scoring (Step 8) | only if translation validation is on, `no_msa = no`, and `aligner = mafft_fast` or `mafft_auto` |
 | `kalign3` | Alternative MSA aligner (faster than MAFFT; recommended) | only if translation validation is on, `no_msa = no`, and `aligner = kalign3` |
 | `gt` (GenomeTools) | GFF3 spec validation of merged genes (Step 7) | optional |
@@ -163,6 +163,7 @@ Use `--steps 4,6` to run only specific steps, or omit `--steps` to run all.
 | 7 | gt | `gt gff3validator` | Fast GFF3 spec check on new Mender genes only; non-fatal |
 | 8 | transl | `validate_merge_translation.pl` | Translate merged proteins, score junctions, assign PASS/FAIL/REVIEW |
 | 9 | agat | `agat_convert_sp_gxf2gxf.pl` | Gene-model check on PASS GFF only; slow, optional |
+| 10 | fasta | `gffread` | Export protein, CDS, and transcript FASTAs from the final validated GFF |
 
 Steps 3 and 5 are automatically skipped when `isoseq_gff` is not set.
 Step 8 is skipped when `run_translation_validation = no` in config.
@@ -479,6 +480,9 @@ When run via `run_mender.pl`, the merge outputs land in `results/<prefix>/`:
 - `merges.gff` — complete merged annotation
 - `removed.gff` — source genes removed
 - `validated.gff` — **recommended for downstream use**; FAIL merges (and optionally REVIEW) replaced with their original source genes; retained Mender genes carry `transl_result`, `msa_flag`, `min_junction_score` GFF attributes (added by step 8)
+- `validated.proteins.fa` — protein sequences from the final validated GFF (step 10)
+- `validated.cds.fa` — CDS sequences from the final validated GFF (step 10)
+- `validated.mrna.fa` — transcript sequences from the final validated GFF (step 10)
 - `run_report.txt` — full run report: all parameters, step status, result counts, output file inventory
 
 ### `split_gene_report_checks.sh`
