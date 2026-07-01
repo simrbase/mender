@@ -452,11 +452,13 @@ for my $tid (@$mrgd_prot_order) {
     next unless defined $gid && exists $merge_info{$gid};
 
     my $raw = $mrgd_prot_ref->{$tid};
-    (my $seq = $raw) =~ s/\*$//;  # strip terminal stop
+    # gffread emits either '*' or '.' for a stop codon depending on version/
+    # invocation (see the tr/./X/ cleanup below) -- match both here too.
+    (my $seq = $raw) =~ s/[*.]$//;  # strip terminal stop
 
     # detect internal stops
     my @ipos;
-    while ($seq =~ /\*/g) { push @ipos, pos($seq) }
+    while ($seq =~ /[*.]/g) { push @ipos, pos($seq) }
     my $has_stop = @ipos ? 1 : 0;
 
     # pick representative: prefer no internal stops, then longest
