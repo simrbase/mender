@@ -22,6 +22,14 @@ use warnings;
 ##   collected from all source transcripts in a pair and sorted by coordinate.
 ##   CDS phase values are recalculated from scratch after joining.
 ##
+##   Every source transcript except the true 3'-most one in the chain (by
+##   genomic coordinate, not list order) has its own terminal CDS segment
+##   trimmed by one codon before pooling, to remove that fragment's native
+##   stop codon -- an artifact of the original (incorrectly split) annotation.
+##   Without this, the merged CDS translates through an internal stop at every
+##   fragment boundary. Trimming a whole codon (3nt) never shifts frame for
+##   the downstream fragment.
+##
 ## New gene ID scheme:
 ##   New genes are assigned IDs starting at CCA3g100001000.1, incrementing
 ##   by 1000 (CCA3g100002000.1, CCA3g100003000.1, etc). The script scans
@@ -955,10 +963,50 @@ for my $group (@merge_groups) {
             $t_attrs
         );
 
+        # Determine which source transcript is the true 3'-most (final) one in
+        # this merge chain, by genomic coordinate rather than list order (safe
+        # regardless of strand or how genes_in_order was generated). Only the
+        # final transcript's native stop codon is real; every other source
+        # transcript's own stop is an artifact of the original (incorrectly
+        # split) annotation, left over from when it was still an independent
+        # gene call, and must be trimmed from its terminal CDS before pooling
+        # -- otherwise the merged CDS translates through an internal stop.
+        my $final_tid;
+        if ($strand eq "+") {
+            $final_tid = (sort { (split "\t", $transcript_line{$b})[4]
+                             <=> (split "\t", $transcript_line{$a})[4] } @source_tids)[0];
+        } else {
+            $final_tid = (sort { (split "\t", $transcript_line{$a})[3]
+                             <=> (split "\t", $transcript_line{$b})[3] } @source_tids)[0];
+        }
+
         # collect sub-features by type from all source transcripts
         my %by_type;  # type -> [lines]
         for my $tid (@source_tids) {
-            for my $feat_line (@{ $transcript_features{$tid} // [] }) {
+            my @feat_lines = @{ $transcript_features{$tid} // [] };
+
+            if ($tid ne $final_tid) {
+                # trim this transcript's own terminal (3'-most) CDS segment by
+                # one codon (its native stop) so it doesn't get translated as
+                # an internal stop once pooled with the next fragment's CDS
+                my @cds_idx = grep { (split "\t", $feat_lines[$_])[2] eq "CDS" } 0 .. $#feat_lines;
+                if (@cds_idx) {
+                    my $term_idx = $strand eq "+"
+                        ? (sort { (split "\t", $feat_lines[$b])[4] <=> (split "\t", $feat_lines[$a])[4] } @cds_idx)[0]
+                        : (sort { (split "\t", $feat_lines[$a])[3] <=> (split "\t", $feat_lines[$b])[3] } @cds_idx)[0];
+                    my @ff  = split "\t", $feat_lines[$term_idx];
+                    my $len = $ff[4] - $ff[3] + 1;
+                    if ($len > 3) {
+                        if ($strand eq "+") { $ff[4] -= 3 } else { $ff[3] += 3 }
+                        $feat_lines[$term_idx] = join("\t", @ff);
+                    } else {
+                        # terminal CDS segment is nothing but the stop codon -- drop it
+                        splice @feat_lines, $term_idx, 1;
+                    }
+                }
+            }
+
+            for my $feat_line (@feat_lines) {
                 my @ff = split "\t", $feat_line;
                 push @{ $by_type{ $ff[2] } }, $feat_line;
             }
