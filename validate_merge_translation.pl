@@ -259,7 +259,7 @@ my @gff_header_lines;    # ##pragma and comment lines before first gene block
                     chrom        => $f[0],
                     strand       => $f[6],
                     frame_break  => $attrs{frame_break} // "",   # merge_split_genes.pl: junctions out of frame
-                    miniprot     => $attrs{miniprot}    // "",   # rebuild_with_miniprot.pl: SUPPORTED | NOT_SUPPORTED:<reason>
+                    miniprot     => $attrs{miniprot_support} // "",   # rebuild_with_miniprot.pl: SUPPORTED | NOT_SUPPORTED:<reason>
                 };
             }
         } elsif (defined $cur_gene_id) {

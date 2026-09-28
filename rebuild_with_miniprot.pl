@@ -30,7 +30,7 @@ use Getopt::Long;
 ##                  mRNA, exon = CDS (no UTRs), phases from miniprot; gene span = model
 ##   NOT_SUPPORTED: the placeholder model is kept; validate_merge_translation.pl
 ##                  fails it (NO_PROTEIN_SPAN)
-## Attributes on the gene (and mRNA): miniprot=SUPPORTED|NOT_SUPPORTED:<reason>,
+## Attributes on the gene (and mRNA): miniprot_support=SUPPORTED|NOT_SUPPORTED:<reason>,
 ## miniprot_ref, miniprot_prot_cov, miniprot_identity, miniprot_positive.
 ##
 ## Usage:
@@ -131,14 +131,53 @@ close $in;
 # source gene spans: the source genes are gone from the merged GFF; merge_split_genes.pl
 # wrote them (with their merge group) to its removed-genes GFF
 my %source_span;   # source gene id -> [start, end]
+my (%tx_gene, %tx_cds);   # source transcript -> gene; -> [[start, end, phase]]
 open my $rm, "<", $removed_gff or die "cant open $removed_gff: $!\n";
 while (my $line = <$rm>) {
+    chomp $line;
     my @f = split /\t/, $line;
-    next unless @f >= 9 && $f[2] eq "gene";
-    my ($gid) = $f[8] =~ /ID=([^;]+)/;
-    $source_span{$gid} = [$f[3], $f[4]] if defined $gid;
+    next unless @f >= 9;
+    my ($fid) = $f[8] =~ /ID=([^;]+)/;
+    my ($parent) = $f[8] =~ /Parent=([^;]+)/;
+    if ($f[2] eq "gene") {
+        $source_span{$fid} = [$f[3], $f[4]] if defined $fid;
+    } elsif ($f[2] eq "mRNA" && defined $fid && defined $parent) {
+        $tx_gene{$fid} = $parent;
+    } elsif ($f[2] eq "CDS" && defined $parent) {
+        push @{ $tx_cds{$parent} }, [$f[3], $f[4], ($f[7] =~ /^[012]$/ ? $f[7] : 0)];
+    }
 }
 close $rm;
+# per source gene, the CDS of its longest-CDS transcript: used to complete a rebuilt
+# model's 5' end with the fragment's own start codon
+my %source_cds;
+for my $tx (sort keys %tx_cds) {
+    my $gene = $tx_gene{$tx} // next;
+    my $len = 0; $len += $_->[1] - $_->[0] + 1 for @{ $tx_cds{$tx} };
+    my $cur = $source_cds{$gene};
+    $source_cds{$gene} = { len => $len, cds => $tx_cds{$tx} } if !$cur || $len > $cur->{len};
+}
+
+# genome bases chr:start-end (1-based), on the given strand (reverse complement on -)
+sub genome_bases {
+    my ($chr, $start, $end, $strand) = @_;
+    my @lines = `$samtools_bin faidx $genome_fa '$chr:$start-$end'`;
+    shift @lines;
+    chomp @lines;
+    my $seq = uc join("", @lines);
+    if ($strand eq "-") { $seq = reverse $seq; $seq =~ tr/ACGT/TGCA/ }
+    return $seq;
+}
+
+# GFF3 phases in transcription order from the first CDS's phase (list of [start, end, phase])
+sub set_phases {
+    my ($tx, $first_phase) = @_;
+    my $coding = -$first_phase;
+    for my $c (@$tx) {
+        $c->[2] = (3 - $coding % 3) % 3;
+        $coding += $c->[1] - $c->[0] + 1;
+    }
+}
 
 open my $rep, ">", $report or die "cant write $report: $!\n";
 print $rep join("\t", qw(new_gene_id merge_id ref region prot_len prot_cov identity positive frameshifts stops
@@ -157,7 +196,7 @@ for my $gid (map { $_->[1] } grep { $_->[0] eq "mender" } @order) {
     unless (defined $ref && defined $ref_seq{$ref} && $ref_seq{$ref} ne "") {
         ($result, $reason) = ("NOT_SUPPORTED", "no_reference_protein");
         print $rep join("\t", @report_row, (".") x 9, $result, $reason), "\n";
-        $gene_attr{$gid} = ";miniprot=$result:$reason";
+        $gene_attr{$gid} = ";miniprot_support=$result:$reason";
         $n_not++;
         next;
     }
@@ -173,7 +212,7 @@ for my $gid (map { $_->[1] } grep { $_->[0] eq "mender" } @order) {
 
     # the Rank=1 alignment: its PAF line (frameshifts, stops), mRNA and CDS lines
     my ($paf, $mrna, @cds);
-    my $mp_id;
+    my ($mp_id, $mp_stop);
     for my $line (@out) {
         chomp $line;
         if ($line =~ /^##PAF\t/ && !defined $paf) { $paf = $line; next }
@@ -181,12 +220,13 @@ for my $gid (map { $_->[1] } grep { $_->[0] eq "mender" } @order) {
         next unless @f >= 9;
         if ($f[2] eq "mRNA" && !defined $mrna && $f[8] =~ /Rank=1\b/) { $mrna = \@f; ($mp_id) = $f[8] =~ /ID=([^;]+)/; next }
         push @cds, \@f if $f[2] eq "CDS" && defined $mp_id && $f[8] =~ /Parent=\Q$mp_id\E;/;
+        $mp_stop = 1 if $f[2] eq "stop_codon" && defined $mp_id && $f[8] =~ /Parent=\Q$mp_id\E;/;
     }
     my $prot_len = length $ref_seq{$ref};
     unless ($mrna && @cds) {
         ($result, $reason) = ("NOT_SUPPORTED", "no_alignment");
         print $rep join("\t", @report_row, $region, $prot_len, (".") x 7, $result, $reason), "\n";
-        $gene_attr{$gid} = ";miniprot=$result:$reason;miniprot_ref=$ref";
+        $gene_attr{$gid} = ";miniprot_support=$result:$reason;miniprot_ref=$ref";
         $n_not++;
         next;
     }
@@ -221,20 +261,60 @@ for my $gid (map { $_->[1] } grep { $_->[0] eq "mender" } @order) {
 
     print $rep join("\t", @report_row, $region, $prot_len, sprintf("%.3f", $prot_cov), $identity // ".", $positive // ".",
                     $fs, $st, scalar(@gcds), "$covered/" . scalar(@sources), $result, $reason), "\n";
-    my $attrs = sprintf(";miniprot=%s%s;miniprot_ref=%s;miniprot_prot_cov=%.3f;miniprot_identity=%s;miniprot_positive=%s",
+    my $attrs = sprintf(";miniprot_support=%s%s;miniprot_ref=%s;miniprot_prot_cov=%.3f;miniprot_identity=%s;miniprot_positive=%s",
                         $result, ($reason ne "." ? ":$reason" : ""), $ref, $prot_cov, $identity // ".", $positive // ".");
     $gene_attr{$gid} = $attrs;
     if ($result eq "NOT_SUPPORTED") { $n_not++; next }
     $n_sup++;
 
-    # the rebuilt transcript: one mRNA, exon = CDS, miniprot's phases
-    my @sorted = sort { $a->[0] <=> $b->[0] } @gcds;
+    # the rebuilt transcript, in transcription order: [start, end, phase]
+    my $strand = $g->{strand};
+    my @tx = map { [$_->[0], $_->[1], ($_->[3] =~ /^[012]$/ ? $_->[3] : 0)] }
+             ($strand eq "-" ? sort { $b->[1] <=> $a->[1] } @gcds : sort { $a->[0] <=> $b->[0] } @gcds);
+
+    # Start codon. miniprot's model begins where the reference alignment begins, which is
+    # not a start codon when the N-terminus is poorly conserved. The 5'-most source fragment
+    # was called with its own start codon: when miniprot's first coding base lies inside one
+    # of that fragment's CDS segments, in the fragment's reading frame, the fragment's CDS
+    # upstream of that point (from its ATG) completes the model.
+    my $start_note = "incomplete";
+    my $first_codon = $tx[0][2] == 0 && $tx[0][1] - $tx[0][0] >= 2
+        ? genome_bases($g->{chr}, ($strand eq "-" ? ($tx[0][1] - 2, $tx[0][1]) : ($tx[0][0], $tx[0][0] + 2)), $strand) : "";
+    if ($first_codon eq "ATG") {
+        $start_note = "present";
+    } else {
+        my ($five) = sort { $strand eq "-" ? $source_span{$b}[1] <=> $source_span{$a}[1] : $source_span{$a}[0] <=> $source_span{$b}[0] }
+                     grep { $source_span{$_} && $source_cds{$_} } @sources;
+        my @fcds = $five ? map { [@$_] } @{ $source_cds{$five}{cds} } : ();
+        @fcds = $strand eq "-" ? sort { $b->[1] <=> $a->[1] } @fcds : sort { $a->[0] <=> $b->[0] } @fcds;
+        if (@fcds && $fcds[0][2] == 0) {
+            my $f_codon = genome_bases($g->{chr}, ($strand eq "-" ? ($fcds[0][1] - 2, $fcds[0][1]) : ($fcds[0][0], $fcds[0][0] + 2)), $strand);
+            # miniprot's first coding base (after its phase), and the fragment segment holding it
+            my $mp_first = $strand eq "-" ? $tx[0][1] - $tx[0][2] : $tx[0][0] + $tx[0][2];
+            my ($k) = grep { $fcds[$_][0] <= $mp_first && $mp_first <= $fcds[$_][1] } 0 .. $#fcds;
+            if ($f_codon eq "ATG" && defined $k) {
+                my $offset = 0;   # fragment coding bases before miniprot's first coding base
+                $offset += $fcds[$_][1] - $fcds[$_][0] + 1 for 0 .. $k - 1;
+                $offset += $strand eq "-" ? $fcds[$k][1] - $mp_first : $mp_first - $fcds[$k][0];
+                if ($offset > 0 && $offset % 3 == 0) {
+                    my @head = @fcds[0 .. $k - 1];
+                    my $joined = $strand eq "-" ? [$tx[0][0], $fcds[$k][1], 0] : [$fcds[$k][0], $tx[0][1], 0];
+                    @tx = (@head, $joined, @tx[1 .. $#tx]);
+                    $start_note = "from_fragment:$five";
+                }
+            }
+        }
+    }
+    set_phases(\@tx, $start_note eq "incomplete" ? $tx[0][2] : 0);
+    my $end_note = $mp_stop ? "present" : "absent";
+    $attrs .= ";start_codon=$start_note;stop_codon=$end_note";
+    $gene_attr{$gid} = $attrs;
+    my @sorted = sort { $a->[0] <=> $b->[0] } @tx;
     my ($m_start, $m_end) = ($sorted[0][0], $sorted[-1][1]);
     my ($old_tid) = map { /\tmRNA\t.*ID=([^;]+)/ ? $1 : () } @{ $block{$gid} // [] };
     my $tid = $old_tid // "$gid.t1";
     my @lines = (join("\t", $g->{chr}, "Mender", "mRNA", $m_start, $m_end, ".", $g->{strand}, ".",
                       "ID=$tid;Parent=$gid;Name=$tid;merge_source=Mender;merge_id=$g->{merge_id};model_source=miniprot$attrs"));
-    my @tx = $g->{strand} eq "-" ? reverse @sorted : @sorted;
     my $n = 0;
     for my $c (@tx) {
         $n++;
@@ -243,7 +323,7 @@ for my $gid (map { $_->[1] } grep { $_->[0] eq "mender" } @order) {
     $n = 0;
     for my $c (@tx) {
         $n++;
-        push @lines, join("\t", $g->{chr}, "Mender", "CDS", $c->[0], $c->[1], ".", $g->{strand}, $c->[3], "ID=$tid.CDS.$n;Parent=$tid");
+        push @lines, join("\t", $g->{chr}, "Mender", "CDS", $c->[0], $c->[1], ".", $g->{strand}, $c->[2], "ID=$tid.CDS.$n;Parent=$tid");
     }
     $new_block{$gid} = { lines => \@lines, start => $m_start, end => $m_end };
 }
