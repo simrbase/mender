@@ -146,7 +146,7 @@ my $run_agat  = cfg("validation", "run_agat", "yes");
 # translation validation (step 8)
 my $run_transl_val  = cfg("validation", "run_translation_validation", "yes");
 my $tv_min_junction = cfg("validation", "min_junction_score",         "0.5");
-my $tv_min_mrgd_cov = cfg("validation", "min_merged_cov",             "0.60");
+my $tv_min_mrgd_cov = cfg("validation", "min_merged_cov",             "0.80");
 my $tv_min_ref_cov  = cfg("validation", "min_ref_cov",                "0.50");
 my $tv_keep_msa     = cfg("validation", "keep_msa",                   "no");
 my $tv_no_msa       = cfg("validation", "no_msa",                     "no");

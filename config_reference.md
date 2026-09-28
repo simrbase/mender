@@ -75,8 +75,8 @@ section. Copy `mender.cfg.example` to a project-specific name before editing.
 |-----|-----------------|---------|-------|
 | `run_gt` | Run `gt gff3validator` on merged GFF (step 7, fast) | `yes` | yes / no. Checks strict GFF3 spec compliance; non-fatal |
 | `run_translation_validation` | Run `validate_merge_translation.pl` (step 8) | `yes` | yes / no. Skip when `genome_fa` is unavailable or for a quick run |
-| `min_junction_score` | Minimum per-junction MSA score for a merge to PASS | `0.5` | Range 0.0–1.0. Higher = stricter |
-| `min_merged_cov` | Minimum fraction of merged protein covered by best reference hit | `0.60` | Relaxed vs the 0.85 fragment filter used in step 4 |
+| `min_junction_score` | Per-junction MSA score below which `msa_flag` is WEAK_JUNCTION | `0.5` | Informational only (2026-09-28): in a negative control of 100 deliberately false merges every one scored GOOD_MSA (0.59–1.00), the same range as real merges, so the score no longer decides PASS/FAIL. The alignments remain useful to inspect (`keep_msa = yes`) |
+| `min_merged_cov` | Minimum fraction of merged protein covered by best reference hit | `0.80` | The check that separates true from false merges (Congeria negative control: 0.80 kept 89/93 real merges, 12/100 deliberately false ones). The MSA junction score is reported but no longer decides PASS/FAIL |
 | `min_ref_cov` | Minimum fraction of best reference protein covered by merged protein | `0.50` | — |
 | `no_msa` | Skip MSA entirely; report translation + diamond only | `no` | yes / no. Faster but loses junction scoring |
 | `aligner` | MSA tool and strategy for junction scoring | `mafft_fast` | Options: `mafft_fast` (FFT-NS-2, fastest), `mafft_auto` (best strategy for input size), `kalign3` (5–10× faster than mafft_auto; recommended for large runs) |

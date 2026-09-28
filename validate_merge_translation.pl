@@ -48,7 +48,7 @@ use warnings;
 ##   --no_msa             Skip MSA; report translation + diamond only
 ##   --scratch DIR        Directory for intermediate/scratch files (default: same as --out)
 ##   --min_junction F     Min per-junction MSA score to PASS (default: 0.5)
-##   --min_merged_cov F   Min merged protein coverage by best ref hit (default: 0.60)
+##   --min_merged_cov F   Min merged protein coverage by best ref hit (default: 0.80)
 ##   --min_ref_cov F      Min ref protein coverage by merged protein (default: 0.50)
 ##   --max_msa_refs N     Max ref hits to include per MSA (default: 3)
 ##   --keep_msa           Write per-merge MSA files to <out>_msa/
@@ -102,7 +102,7 @@ my $threads        = 4;
 my $evalue         = "1e-10";
 my $no_msa         = 0;
 my $min_junction   = 0.5;
-my $min_merged_cov = 0.60;
+my $min_merged_cov = 0.80;
 my $min_ref_cov    = 0.50;
 my $max_msa_refs   = 3;
 my $keep_msa       = 0;
@@ -1102,7 +1102,13 @@ for my $gid (keys %merge_info) {
     }
     if ($mflag eq "NO_HIT") {
         push @fail_reasons, "NO_HIT";
-    } elsif ($mrgd_cov < $min_merged_cov && $mflag ne "GOOD_MSA") {
+    } elsif ($mrgd_cov < $min_merged_cov) {
+        # One reference protein must cover most of the merged protein. This is the
+        # check that separates true from false merges; the MSA junction score does
+        # not (100 deliberately false merges of two distinct adjacent genes: all
+        # GOOD_MSA, junction scores 0.59-1.00; merged_cov_by_ref median 0.57 vs 0.98
+        # for real merges; >= 0.80 kept 89/93 real, 12/100 false). A GOOD_MSA no
+        # longer overrides this.
         push @fail_reasons, "LOW_MERGED_COV";
     }
 
@@ -1110,8 +1116,8 @@ for my $gid (keys %merge_info) {
         $result = "FAIL";
     } elsif ($transl_flag eq "OK"
           && $mrgd_cov >= $min_merged_cov
-          && $ref_cov  >= $min_ref_cov
-          && ($mflag eq "GOOD_MSA" || $mflag eq "GOOD_MSA_LOW_REF" || $no_msa)) {
+          && $ref_cov  >= $min_ref_cov) {
+        # msa_flag / junction scores are reported for review but do not decide
         $result = "PASS";
     } else {
         $result = "REVIEW";

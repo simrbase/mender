@@ -364,13 +364,14 @@ run_gt = yes
 ## Set to no to skip (e.g. when genome_fa is unavailable or for a quick run).
 run_translation_validation = yes
 
-## min_junction_score: minimum per-junction MSA score for a merge to PASS.
-## Range 0.0–1.0. Higher = stricter. Default: 0.5.
+## min_junction_score: per-junction MSA score reported as msa_flag (GOOD_MSA /
+## WEAK_JUNCTION). Informational only: it does not decide PASS/FAIL, because it
+## does not separate false merges from real ones (see config_reference.md).
 min_junction_score = 0.5
 
 ## min_merged_cov: minimum fraction of merged protein covered by best ref hit.
-## Default: 0.60 (relaxed vs the 0.85 fragment filter in find_split_genes.pl).
-min_merged_cov = 0.60
+## This is the check that separates true from false merges. Default: 0.80.
+min_merged_cov = 0.80
 
 ## min_ref_cov: minimum fraction of best ref protein covered by merged protein.
 ## Default: 0.50.

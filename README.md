@@ -663,6 +663,42 @@ input GFF, so new IDs never collide with existing ones.
 
 ---
 
+## Transcript evidence from your own RNA-seq (optional)
+
+A reference proteome from another species misses genes that are not conserved and loses
+sensitivity with evolutionary distance. Your organism's own transcripts have neither
+problem: a complete open reading frame from a correctly assembled transcript covers the
+whole gene, so it tiles every fragment the annotation split it into, at ~100% identity.
+
+The simplest use needs no special step: give the transcriptome's complete ORFs (for
+example TransDecoder `type:complete` proteins from a Trinity assembly) as `subject_fa`,
+alone or concatenated with a reference proteome. Candidates are then found by the same
+tiling test. Because the evidence is an open reading frame that continues across the
+junction, a transcript that merely overlaps two genes (a read-through or chimeric
+assembly) does not create a candidate.
+
+**Use a transcriptome at least as complete as the gene models.** Run BUSCO on the
+transcriptome's proteins and on the gene models' proteins with the same lineage. A
+transcriptome should be used as evidence only if its BUSCO complete score is as good as,
+or better than, the gene models'; a fragmented transcriptome adds fragments, not fixes.
+Mender does not run BUSCO; this is a check for the user. (Example, *Congeria kusceri*:
+Trinity + TransDecoder complete 99.5%, MAKER gene models 84.1% complete, 5.3% fragmented.)
+Prefer transcripts supported by more than one library or tissue.
+
+## Rebuilding merged genes with miniprot (in development)
+
+`merge_split_genes.pl` joins the fragments' own exons, so the joined "intron" has no real
+splice sites and an exon missing at the break stays missing. `rebuild_with_miniprot.pl`
+aligns the reference protein the fragments tiled against to the merged locus with
+miniprot (spliced protein-to-genome alignment). A true split gives one alignment covering
+most of the protein and every fragment, with real splice sites and no frameshift; that
+alignment replaces the placeholder model. A false merge of two different genes does not:
+in a *Congeria* negative control (100 adjacent pairs of distinct full-length genes merged
+on purpose) all 100 were NOT_SUPPORTED, while 65 of 93 real merges were SUPPORTED and
+rebuilt (median 97% of the reference protein; no internal stops) with a distant
+(Lottia/Capitella) reference. Rebuilt models are CDS-only (no UTRs) and start where the
+reference alignment starts, which is not always a start codon.
+
 ## Without IsoSeq
 
 IsoSeq is optional. If `isoseq_gff` is left blank in the config, steps 3 and
