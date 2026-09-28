@@ -145,20 +145,22 @@ my $run_agat  = cfg("validation", "run_agat", "yes");
 
 # translation validation (step 8)
 my $run_transl_val  = cfg("validation", "run_translation_validation", "yes");
-my $tv_min_junction = cfg("validation", "min_junction_score",         "0.5");
 my $tv_min_mrgd_cov = cfg("validation", "min_merged_cov",             "0.80");
 my $tv_min_ref_cov  = cfg("validation", "min_ref_cov",                "0.50");
-my $tv_keep_msa     = cfg("validation", "keep_msa",                   "no");
-my $tv_no_msa       = cfg("validation", "no_msa",                     "no");
-my $tv_swissprot_fa = cfg("validation", "swissprot_fa",               "");
-my $tv_swissprot_db = cfg("validation", "swissprot_db", "") || "$db_dir/swissprot.dmnd";
-my $tv_aligner      = cfg("validation", "aligner",                    "mafft_fast");
 my $tv_final_incl_review = cfg("validation", "final_gff_include_review", "yes");
-my $tv_w_conservation = cfg("validation", "w_conservation",           "0.3");
-my $tv_w_continuity   = cfg("validation", "w_continuity",             "0.3");
-my $tv_w_gap          = cfg("validation", "w_gap",                    "0.4");
-my $tv_min_msa_refs   = cfg("validation", "min_msa_refs",             "2");
-my $tv_max_msa_refs   = cfg("validation", "max_msa_refs",             "3");
+
+# miniprot rebuild of merged genes (step 6): the tiling reference protein aligned
+# across each merged locus; supported merges get the miniprot model
+my $run_miniprot      = cfg("miniprot", "run_miniprot", "yes");
+my $mp_flank          = cfg("miniprot", "flank",        "5000");
+my $mp_min_prot_cov   = cfg("miniprot", "min_prot_cov", "0.80");
+
+# config keys of the MSA junction scoring, removed 2026-09-28 (it did not separate
+# false merges from real ones): accepted but ignored, with a warning
+my @obsolete_msa_keys = grep { exists $cfg{validation}{$_} }
+    qw(min_junction_score no_msa keep_msa aligner w_conservation w_continuity w_gap
+       min_msa_refs max_msa_refs swissprot_fa swissprot_db);
+push @obsolete_msa_keys, grep { exists $cfg{paths}{$_} } qw(mafft_bin kalign_bin);
 
 # paths
 my $scripts_dir  = cfg("paths", "scripts_dir",  "") || dirname(abs_path($0));
@@ -167,8 +169,8 @@ my $bedtools_bin = cfg("paths", "bedtools_bin", "") || "bedtools";
 my $gt_bin       = cfg("paths", "gt_bin",       "") || "gt";
 my $agat_bin     = cfg("paths", "agat_bin",     "") || "agat_convert_sp_gxf2gxf.pl";
 my $gffread_bin  = cfg("paths", "gffread_bin",  "") || "gffread";
-my $mafft_bin    = cfg("paths", "mafft_bin",    "") || "mafft";
-my $kalign_bin   = cfg("paths", "kalign_bin",   "") || "kalign";
+my $miniprot_bin = cfg("paths", "miniprot_bin", "") || "miniprot";
+my $samtools_bin = cfg("paths", "samtools_bin", "") || "samtools";
 my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
 
 # ---------------------------------------------------------------------------
@@ -184,8 +186,7 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
         run_gt                     => $run_gt,
         run_agat                   => $run_agat,
         run_translation_validation => $run_transl_val,
-        no_msa                     => $tv_no_msa,
-        keep_msa                   => $tv_keep_msa,
+        run_miniprot               => $run_miniprot,
         final_gff_include_review   => $tv_final_incl_review,
     );
     for my $key (sort keys %yesno) {
@@ -198,8 +199,8 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
         push @errors, "require_isoseq: must be FULL_SPAN, PARTIAL_SPAN, or NO_SPANNERS (or blank), got '$require_isoseq'"
             unless $require_isoseq =~ /^(FULL_SPAN|PARTIAL_SPAN|NO_SPANNERS)$/;
     }
-    push @errors, "aligner: must be mafft_fast, mafft_auto, or kalign3, got '$tv_aligner'"
-        unless $tv_aligner =~ /^(mafft_fast|mafft_auto|kalign3)$/;
+    push @warnings, "obsolete MSA key(s) ignored (the MSA junction scoring was removed): "
+        . join(", ", @obsolete_msa_keys) if @obsolete_msa_keys;
 
     # numeric keys
     my %numeric = (
@@ -213,8 +214,7 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
         frag_min_qcov        => $frag_min_qcov,
         end_tol              => $end_tol,
         isoseq_min_spanning  => $isoseq_min_span,
-        min_msa_refs         => $tv_min_msa_refs,
-        max_msa_refs         => $tv_max_msa_refs,
+        flank                => $mp_flank,
         large_span_warn      => $large_span_warn,
         large_span_hard      => $large_span_hard,
     );
@@ -225,12 +225,9 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
 
     # 0-1 range
     my %zeroone = (
-        min_junction_score => $tv_min_junction,
         min_merged_cov     => $tv_min_mrgd_cov,
         min_ref_cov        => $tv_min_ref_cov,
-        w_conservation     => $tv_w_conservation,
-        w_continuity       => $tv_w_continuity,
-        w_gap              => $tv_w_gap,
+        min_prot_cov       => $mp_min_prot_cov,
     );
     for my $key (sort keys %zeroone) {
         my $val = $zeroone{$key};
@@ -241,16 +238,12 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
         }
     }
 
-    # MSA weights must sum to 1.0
-    my $wsum = $tv_w_conservation + $tv_w_continuity + $tv_w_gap;
-    push @errors, sprintf("w_conservation + w_continuity + w_gap must sum to 1.0, got %.4f", $wsum)
-        if abs($wsum - 1.0) > 0.001;
-
     # flag name validation in skip_flags / flags (warn only — unknown flags are skipped silently
     # at runtime, so this catches typos before the run wastes time)
     my %known_flags = map { $_ => 1 } qw(
         CLEAN STRONG SINGLE_HIT WEAK_END WEAK_INTERNAL LOW_COV
         SKIPPED_GENE OPPOSITE_STRAND_SKIP TRANSITIVE_JOIN MULTI_ISOFORM_JOIN LARGE_SPAN LARGE_SPAN_EXTREME
+        JUNCTION_OVERHANG
     );
     for my $item (["skip_flags", $skip_flags], ["flags", $flags]) {
         my ($key, $val) = @$item;
@@ -287,6 +280,7 @@ my $find_script      = "$scripts_dir/find_split_genes.pl";
 my $isoseq_script    = "$scripts_dir/validate_merge_with_isoseq.pl";
 my $merge_script     = "$scripts_dir/merge_split_genes.pl";
 my $transl_script    = "$scripts_dir/validate_merge_translation.pl";
+my $miniprot_script  = "$scripts_dir/rebuild_with_miniprot.pl";
 
 # ---------------------------------------------------------------------------
 # Determine which steps to run
@@ -446,13 +440,10 @@ print "Large span warn: $large_span_warn bp\n";
 print "Large span hard: $large_span_hard bp\n";
 print "Transl val:      ", ($run_transl_val =~ /^no$/i ? "no" : "yes"), "\n";
 if ($run_transl_val !~ /^no$/i) {
-    print "  min_junction:  $tv_min_junction\n";
     print "  min_merged_cov:$tv_min_mrgd_cov\n";
     print "  min_ref_cov:   $tv_min_ref_cov\n";
-    print "  no_msa:        ", ($tv_no_msa =~ /^yes$/i ? "yes" : "no"), "\n";
-    print "  aligner:       $tv_aligner\n";
-    print "  swissprot_fa:  ", ($tv_swissprot_fa || "(not set — MSA will use ref_fa)"), "\n";
 }
+print "miniprot rebuild: ", ($run_miniprot =~ /^no$/i ? "no" : "yes (flank $mp_flank bp, min_prot_cov $mp_min_prot_cov)"), "\n";
 print "=" x 60, "\n";
 
 # ---------------------------------------------------------------------------
@@ -480,15 +471,10 @@ print "=" x 60, "\n";
     # gffread: needed for translation validation (step 8) or FASTA export (step 10)
     push @checks, [$gffread_bin,  "gffread",  $run_transl_val !~ /^no$/i || $run_steps{10}];
 
-    # mafft: only if translation validation is on, no_msa is off, and aligner is mafft_*
-    push @checks, [$mafft_bin,    "mafft",    $run_transl_val !~ /^no$/i
-                                              && $tv_no_msa =~ /^no$/i
-                                              && $tv_aligner =~ /^mafft/];
-
-    # kalign3: only if translation validation is on, no_msa is off, and aligner = kalign3
-    push @checks, [$kalign_bin,   "kalign3",  $run_transl_val !~ /^no$/i
-                                              && $tv_no_msa =~ /^no$/i
-                                              && $tv_aligner eq "kalign3"];
+    # miniprot + samtools: the rebuild of merged genes in step 6 (run_miniprot = yes)
+    my $need_mp = $run_miniprot !~ /^no$/i && $run_steps{6};
+    push @checks, [$miniprot_bin, "miniprot", $need_mp];
+    push @checks, [$samtools_bin, "samtools", $need_mp];
 
     # agat: only if run_agat = yes (step 9)
     push @checks, [$agat_bin,     "agat",     $run_agat !~ /^no$/i];
@@ -513,15 +499,10 @@ print "=" x 60, "\n";
     }
     print "  All required tools found.\n";
 
-    # File existence check for swissprot_fa (warning only — falls back to ref_fa)
-    if ($run_transl_val !~ /^no$/i && $tv_swissprot_fa) {
-        if (-f $tv_swissprot_fa) {
-            printf "  %-12s OK  (%s)\n", "swissprot_fa", $tv_swissprot_fa;
-        } else {
-            print "WARNING: swissprot_fa not found: $tv_swissprot_fa\n";
-            print "         MSA will fall back to ref_fa sequences for junction scoring.\n";
-            $tv_swissprot_fa = "";  # clear so it is not passed to the script
-        }
+    # miniprot reads the merged locus through a samtools faidx index of the genome
+    if ($need_mp && !-e "$genome_fa.fai") {
+        print "ERROR: run_miniprot = yes needs a genome index $genome_fa.fai (samtools faidx $genome_fa)\n";
+        exit 1;
     }
 }
 
@@ -729,6 +710,24 @@ if ($run_steps{6}) {
     $merge_cmd .= " $validated_table $gff $output_gff";
 
     run_cmd($merge_cmd, "Merge split genes into annotation");
+
+    # Rebuild each merged gene from protein evidence: the reference protein the
+    # fragments tiled against, aligned across the merged locus with miniprot. A
+    # supported merge gets the miniprot model (real splice sites, missing exons
+    # recovered); an unsupported one keeps the placeholder and fails step 8
+    # (NO_PROTEIN_SPAN). The placeholder models are kept in merges.placeholder.gff.
+    if ($run_miniprot !~ /^no$/i) {
+        check_file($miniprot_script, "rebuild_with_miniprot.pl");
+        my $placeholder_gff = "$run_dir/merges.placeholder.gff";
+        run_cmd("mv $output_gff $placeholder_gff", "Keep the placeholder merged models");
+        run_cmd("$perl_bin $miniprot_script"
+              . " --merged_gff $placeholder_gff --removed_gff $removed_gff"
+              . " --merge_table $validated_table --ref_fa $subject_fa --genome_fa $genome_fa"
+              . " --out $output_gff --report $run_dir/miniprot.tsv --scratch $run_workdir"
+              . " --flank $mp_flank --min_prot_cov $mp_min_prot_cov --threads $threads"
+              . " --miniprot_bin $miniprot_bin --samtools_bin $samtools_bin",
+              "Rebuild merged genes with miniprot");
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -816,7 +815,6 @@ if ($run_steps{8}) {
 
     my $tv_cmd = "$perl_bin $transl_script"
         . " --merged_gff $output_gff"
-        . " --orig_gff $gff"
         . " --genome_fa $genome_fa"
         . " --ref_fa $subject_fa"
         . " --diamond_db $diamond_db"
@@ -824,23 +822,10 @@ if ($run_steps{8}) {
         . " --out $tv_out"
         . " --scratch $run_workdir"
         . " --threads $threads"
-        . " --min_junction $tv_min_junction"
         . " --min_merged_cov $tv_min_mrgd_cov"
         . " --min_ref_cov $tv_min_ref_cov"
-        . ($tv_keep_msa =~ /^yes$/i ? " --keep_msa"  : "")
-        . ($tv_no_msa =~ /^yes$/i ? " --no_msa"  : "")
-        . ($tv_swissprot_fa ? " --swissprot_fa $tv_swissprot_fa" : "")
-        . ($tv_swissprot_fa ? " --swissprot_db $tv_swissprot_db" : "")
-        . " --aligner $tv_aligner"
-        . " --w_conservation $tv_w_conservation"
-        . " --w_continuity $tv_w_continuity"
-        . " --w_gap $tv_w_gap"
-        . " --min_msa_refs $tv_min_msa_refs"
-        . " --max_msa_refs $tv_max_msa_refs"
         . " --gffread_bin $gffread_bin"
-        . " --diamond_bin $diamond_bin"
-        . " --mafft_bin $mafft_bin"
-        . " --kalign_bin $kalign_bin";
+        . " --diamond_bin $diamond_bin";
 
     run_cmd($tv_cmd, "Translation validation of merged genes");
 
@@ -909,8 +894,8 @@ if ($run_steps{9}) {
 # FINAL VALIDATED GFF
 # ---------------------------------------------------------------------------
 # Builds a complete annotation GFF where FAIL merges (and optionally REVIEW)
-# are replaced with their original source genes. Adds transl_result, msa_flag,
-# and min_junction_score attributes to all retained Mender gene features.
+# are replaced with their original source genes. Adds the transl_result
+# attribute to all retained Mender gene features.
 # Generated automatically whenever translation validation outputs are present.
 # ---------------------------------------------------------------------------
 {
@@ -923,21 +908,20 @@ if ($run_steps{9}) {
         print "FINAL VALIDATED GFF\n";
         print "=" x 60, "\n";
 
-        # Load validation attributes from TSV report (result, msa_flag, min_junction_score)
+        # Load validation results from the TSV report, by column NAME (a fixed column
+        # number silently read the wrong column when the report's columns changed)
         my %transl_attrs;  # new_gene_id -> hashref
         if (-f $report_tsv) {
             open my $fh, "<", $report_tsv or die "Cannot open $report_tsv: $!\n";
-            <$fh>;  # skip header
+            chomp(my $hdr = <$fh> // "");
+            my @cols = split /\t/, $hdr;
+            my %ci = map { $cols[$_] => $_ } 0 .. $#cols;
+            die "ERROR: $report_tsv lacks new_gene_id / overall_result columns\n"
+                unless defined $ci{new_gene_id} && defined $ci{overall_result};
             while (my $line = <$fh>) {
                 chomp $line;
                 my @f = split /\t/, $line;
-                next unless @f >= 20;
-                # cols: 1=new_gene_id, 13=min_junction_score, 15=msa_flag, 19=overall_result
-                $transl_attrs{$f[1]} = {
-                    result   => $f[19],
-                    msa_flag => $f[15],
-                    min_js   => $f[13],
-                };
+                $transl_attrs{ $f[$ci{new_gene_id}] } = { result => $f[$ci{overall_result}] };
             }
             close $fh;
         }
@@ -1010,9 +994,7 @@ if ($run_steps{9}) {
                     # Annotate retained Mender genes with transl validation flags
                     if ($cur_is_mender && exists $transl_attrs{$cur_id}) {
                         my $ta = $transl_attrs{$cur_id};
-                        $cur_block[0] .= ";transl_result=$ta->{result}" .
-                                         ";msa_flag=$ta->{msa_flag}" .
-                                         ";min_junction_score=$ta->{min_js}";
+                        $cur_block[0] .= ";transl_result=$ta->{result}";
                     }
                     print $out "$_\n" for @cur_block;
                 }
@@ -1176,18 +1158,13 @@ if ($run_steps{10}) {
     $r->("");
     $r->("[validation]");
     $r->("  run_translation_validation: " . ($run_transl_val =~ /^no$/i ? "no" : "yes"));
-    $r->("  min_junction_score:         $tv_min_junction");
     $r->("  min_merged_cov:             $tv_min_mrgd_cov");
     $r->("  min_ref_cov:                $tv_min_ref_cov");
-    $r->("  aligner:                    $tv_aligner");
-    $r->(sprintf "  w_conservation: %.2f  w_continuity: %.2f  w_gap: %.2f",
-        $tv_w_conservation, $tv_w_continuity, $tv_w_gap);
-    $r->("  min_msa_refs:               $tv_min_msa_refs");
-    $r->("  max_msa_refs:               $tv_max_msa_refs");
-    $r->("  no_msa:                     " . ($tv_no_msa =~ /^yes$/i ? "yes" : "no"));
-    $r->("  keep_msa:                   " . ($tv_keep_msa =~ /^yes$/i ? "yes" : "no"));
-    $r->("  swissprot_fa:               " . ($tv_swissprot_fa || "(not set — using ref_fa)"));
-    $r->("  swissprot_db:               " . ($tv_swissprot_fa ? $tv_swissprot_db : "(n/a — no swissprot_fa)"));
+    $r->("");
+    $r->("[miniprot]");
+    $r->("  run_miniprot:               " . ($run_miniprot =~ /^no$/i ? "no" : "yes"));
+    $r->("  flank:                      $mp_flank bp");
+    $r->("  min_prot_cov:               $mp_min_prot_cov");
     $r->("  run_dir:                    $run_dir");
     $r->("  run_workdir:                $run_workdir");
     $r->("  final_gff_include_review:   " . ($tv_final_incl_review =~ /^no$/i ? "no" : "yes"));
@@ -1212,12 +1189,14 @@ if ($run_steps{10}) {
         $h->("RESULTS");
         my (%counts, $total);
         open my $fh, "<", $report_tsv or die;
-        <$fh>;  # header
+        chomp(my $hdr = <$fh> // "");
+        my @cols = split /\t/, $hdr;
+        my ($c_res) = grep { $cols[$_] eq "overall_result" } 0 .. $#cols;
         while (<$fh>) {
             chomp;
             my @f = split /\t/;
-            next unless @f >= 20;
-            $counts{$f[19]}++;
+            next unless defined $c_res && defined $f[$c_res];
+            $counts{$f[$c_res]}++;
             $total++;
         }
         close $fh;
@@ -1242,8 +1221,10 @@ if ($run_steps{10}) {
         [$removed_gff,   "source genes removed during merge (audit trail)"],
         ["$tv_out/report.tsv",          "per-merge validation results"],
         ["$tv_out/pass.gff3",           "PASS merges only"],
-        ["$tv_out/review.gff3",         "REVIEW merges (borderline MSA score)"],
+        ["$tv_out/review.gff3",         "REVIEW merges (merged protein covers < min_ref_cov of its reference)"],
         ["$tv_out/fail.gff3",           "FAIL merges only"],
+        ["$tv_out/miniprot.tsv",        "miniprot rebuild: per merge, SUPPORTED / NOT_SUPPORTED and why"],
+        ["$tv_out/merges.placeholder.gff", "merged models before the miniprot rebuild"],
         ["$tv_out/pass_proteins.fa",       "translated proteins for PASS merges (step 8)"],
         ["$tv_out/validated.proteins.fa", "protein sequences for final validated GFF (step 10)"],
         ["$tv_out/validated.cds.fa",      "CDS sequences for final validated GFF (step 10)"],

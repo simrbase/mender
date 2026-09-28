@@ -5,33 +5,34 @@ use warnings;
 ## validate_merge_translation.pl
 ##
 ## Step 8 of the Mender pipeline. Post-merge translation quality validator.
-## Validates merged gene models from merge_split_genes.pl by:
+## Validates merged gene models from merge_split_genes.pl (and, when run,
+## rebuild_with_miniprot.pl) by:
 ##
-##   A  Parse merged GFF — collect new gene IDs, source gene lists, GFF blocks
-##   B  Parse original GFF — get representative transcript and CDS length per source gene
+##   A  Parse merged GFF — collect new gene IDs, source gene lists, GFF blocks,
+##      and the miniprot result recorded on each gene
 ##   C  Translate merged proteins (gffread -y); pick representative per gene
-##   D  Translate source gene proteins (gffread -y)
 ##   E  Build or verify diamond database from ref_fa
 ##   F  Diamond blastp merged proteins vs reference proteome; compute coverage metrics
-##   G  Load reference proteome sequences into memory
-##   H  SwissProt diamond blast (if --swissprot_fa); load hit sequences for MSA
 ##   I  Load optional merge table for flag annotations
-##   J  MSA junction scoring — align merged + source + ref (SwissProt + ref_fa) proteins; score each junction
 ##   K  Assign PASS / FAIL / REVIEW per merge
 ##   L  Write outputs (TSV report, pass/fail/review GFF3s, pass proteins FASTA)
+##
+## (Steps B, D, G, H and J -- the MSA junction scoring and the source-protein,
+## reference-sequence and SwissProt loading that fed it -- were removed on
+## 2026-09-28: in a negative control of 100 deliberately false merges every one
+## scored GOOD_MSA, the same range as real merges. Protein coverage and the
+## miniprot rebuild separate them; see README.)
 ##
 ## Usage:
 ##   perl validate_merge_translation.pl \
 ##       --merged_gff merged.gff3 \
-##       --orig_gff   original.gff3 \
 ##       --genome_fa  genome.fa \
 ##       --ref_fa     reference_proteome.fa \
 ##       --out        validation_run1 \
 ##       [options]
 ##
 ## Required:
-##   --merged_gff FILE    Output of merge_split_genes.pl
-##   --orig_gff FILE      Pre-merge annotation (for source gene proteins + CDS lengths)
+##   --merged_gff FILE    Output of merge_split_genes.pl (or rebuild_with_miniprot.pl)
 ##   --genome_fa FILE     Genome sequence (for gffread -y)
 ##   --ref_fa FILE        Reference proteome FASTA (same as diamond step)
 ##   --out PREFIX         Prefix for all output files
@@ -40,51 +41,24 @@ use warnings;
 ##   --diamond_db FILE    Pre-built diamond DB from ref_fa; built if absent
 ##   --merge_table FILE   TSV from find_split_genes.pl / validate_merge_with_isoseq.pl
 ##                        Used to annotate source merge flags in the report
-##   --threads N          Diamond/MAFFT threads (default: 4)
+##   --threads N          Diamond threads (default: 4)
 ##   --evalue E           Diamond evalue cutoff (default: 1e-10)
-##   --aligner STR        MSA tool: mafft_fast (default) | mafft_auto | kalign3
-##                        kalign3 is ~8x faster and recommended for routine runs
-##   --kalign_bin PATH    Path to kalign binary (default: kalign in PATH)
-##   --no_msa             Skip MSA; report translation + diamond only
 ##   --scratch DIR        Directory for intermediate/scratch files (default: same as --out)
-##   --min_junction F     Min per-junction MSA score to PASS (default: 0.5)
 ##   --min_merged_cov F   Min merged protein coverage by best ref hit (default: 0.80)
 ##   --min_ref_cov F      Min ref protein coverage by merged protein (default: 0.50)
-##   --max_msa_refs N     Max ref hits to include per MSA (default: 3)
-##   --keep_msa           Write per-merge MSA files to <out>_msa/
-##   --w_conservation F   Weight for conservation sub-score (default: 0.3)
-##   --w_continuity F     Weight for ref continuity sub-score (default: 0.3)
-##   --w_gap F            Weight for gap pattern sub-score (default: 0.4)
-##   --min_msa_refs N     Min refs in MSA for full-confidence flag (default: 2)
 ##   --gffread_bin PATH   Path to gffread (default: gffread in PATH)
 ##   --diamond_bin PATH   Path to diamond (default: diamond in PATH)
-##   --mafft_bin PATH     Path to mafft (default: mafft in PATH)
-##
-## SwissProt MSA reference (recommended):
-##   --swissprot_fa FILE  UniProt/SwissProt FASTA for MSA reference sequences.
-##                        Manually curated proteins give better junction scoring
-##                        than the species reference proteome (no partial seqs,
-##                        no annotation errors, no '.' characters).
-##                        Falls back to --ref_fa sequences if absent.
-##   --swissprot_db FILE  Pre-built diamond DB from swissprot_fa; built if absent.
-##
-## To download SwissProt:
-##   wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
-##   gunzip uniprot_sprot.fasta.gz
-##   diamond makedb --in uniprot_sprot.fasta --db uniprot_sprot.dmnd
 ##
 ## Outputs:
-##   <out>/report.tsv               Per-merge validation results (TSV, 20 columns)
+##   <out>/report.tsv               Per-merge validation results (TSV, 17 columns)
 ##   <out>/pass.gff3                Merged genes that PASS all checks
 ##   <out>/fail.gff3                Merged genes that FAIL (clear evidence of bad merge)
 ##   <out>/review.gff3              Merged genes that need REVIEW (borderline)
 ##   <out>/pass_proteins.fa         Translated proteins for PASS merges
-##   <scratch>/msa/                 Per-merge alignment files (if --keep_msa)
 ##
 ## Note: <out> is used as a directory name, not a filename prefix.
 
 use Getopt::Long;
-use POSIX qw(floor);
 use File::Path qw(make_path);
 use List::Util qw(max min sum);
 
@@ -92,7 +66,6 @@ use List::Util qw(max min sum);
 # Argument parsing
 # ---------------------------------------------------------------------------
 my $merged_gff     = undef;
-my $orig_gff       = undef;
 my $genome_fa      = undef;
 my $ref_fa         = undef;
 my $diamond_db     = undef;
@@ -100,29 +73,14 @@ my $merge_table    = undef;
 my $out            = undef;
 my $threads        = 4;
 my $evalue         = "1e-10";
-my $no_msa         = 0;
-my $min_junction   = 0.5;
 my $min_merged_cov = 0.80;
 my $min_ref_cov    = 0.50;
-my $max_msa_refs   = 3;
-my $keep_msa       = 0;
-my $w_conservation = 0.3;
-my $w_continuity   = 0.3;
-my $w_gap          = 0.4;
-my $junction_window = 5;
-my $min_msa_refs   = 2;   # warn + flag GOOD_MSA_LOW_REF when fewer refs in MSA
 my $gffread_bin    = "gffread";
 my $diamond_bin    = "diamond";
-my $mafft_bin      = "mafft";
-my $kalign_bin     = "kalign";
-my $aligner        = "mafft_fast";  # mafft_fast | mafft_auto | kalign3
-my $swissprot_fa   = undef;
-my $swissprot_db   = undef;
 my $scratch        = undef;   # directory for intermediate/scratch files
 
 GetOptions(
     "merged_gff=s"      => \$merged_gff,
-    "orig_gff=s"        => \$orig_gff,
     "genome_fa=s"       => \$genome_fa,
     "ref_fa=s"          => \$ref_fa,
     "diamond_db=s"      => \$diamond_db,
@@ -130,52 +88,25 @@ GetOptions(
     "out=s"             => \$out,
     "threads=i"         => \$threads,
     "evalue=s"          => \$evalue,
-    "no_msa"            => \$no_msa,
-    "aligner=s"         => \$aligner,
-    "min_junction=f"    => \$min_junction,
     "min_merged_cov=f"  => \$min_merged_cov,
     "min_ref_cov=f"     => \$min_ref_cov,
-    "max_msa_refs=i"    => \$max_msa_refs,
-    "keep_msa"          => \$keep_msa,
-    "w_conservation=f"  => \$w_conservation,
-    "w_continuity=f"    => \$w_continuity,
-    "w_gap=f"           => \$w_gap,
-    "min_msa_refs=i"    => \$min_msa_refs,
     "gffread_bin=s"     => \$gffread_bin,
     "diamond_bin=s"     => \$diamond_bin,
-    "mafft_bin=s"       => \$mafft_bin,
-    "kalign_bin=s"      => \$kalign_bin,
-    "swissprot_fa=s"    => \$swissprot_fa,
-    "swissprot_db=s"    => \$swissprot_db,
     "scratch=s"         => \$scratch,
 ) or die "Run: perl $0 --help for usage\n";
 
-die "ERROR: --aligner must be one of: mafft_fast, mafft_auto, kalign3 (got: $aligner)\n"
-    unless $aligner =~ /^(mafft_fast|mafft_auto|kalign3)$/;
-
 die "ERROR: --merged_gff is required\n" unless defined $merged_gff;
-die "ERROR: --orig_gff is required\n"   unless defined $orig_gff;
 die "ERROR: --genome_fa is required\n"  unless defined $genome_fa;
 die "ERROR: --ref_fa is required\n"     unless defined $ref_fa;
 die "ERROR: --out is required\n"        unless defined $out;
 
-for my $pair ([$merged_gff, "merged_gff"], [$orig_gff, "orig_gff"],
-              [$genome_fa,  "genome_fa"],  [$ref_fa,   "ref_fa"]) {
+for my $pair ([$merged_gff, "merged_gff"], [$genome_fa,  "genome_fa"],  [$ref_fa,   "ref_fa"]) {
     die "ERROR: --$pair->[1] file not found: $pair->[0]\n" unless -f $pair->[0];
 }
 if (defined $diamond_db) {
     die "ERROR: --diamond_db file not found: $diamond_db\n"
         unless -f $diamond_db || -f "${diamond_db}.dmnd";
 }
-if (defined $swissprot_fa && !-f $swissprot_fa) {
-    print "WARNING: --swissprot_fa file not found: $swissprot_fa\n";
-    print "         MSA will fall back to --ref_fa sequences\n";
-    $swissprot_fa = undef;
-}
-
-my $wsum = $w_conservation + $w_continuity + $w_gap;
-die sprintf("ERROR: --w_conservation + --w_continuity + --w_gap must sum to 1.0 (got %.3f)\n", $wsum)
-    unless abs($wsum - 1.0) < 0.001;
 
 # $out is the run directory; $scratch is for intermediate files
 my $out_dir     = $out;
@@ -189,20 +120,12 @@ print "=" x 60, "\n";
 print "VALIDATE MERGE TRANSLATION\n";
 print "=" x 60, "\n";
 printf "merged_gff:     %s\n", $merged_gff;
-printf "orig_gff:       %s\n", $orig_gff;
 printf "genome_fa:      %s\n", $genome_fa;
 printf "ref_fa:         %s\n", $ref_fa;
-printf "swissprot_fa:   %s\n", ($swissprot_fa // "(not set — MSA will use ref_fa sequences)");
 printf "out_dir:        %s\n", $out_dir;
 printf "scratch_dir:    %s\n", $scratch_dir;
-printf "no_msa:         %s\n", ($no_msa ? "yes" : "no");
-printf "aligner:        %s\n", ($no_msa ? "n/a" : $aligner);
-printf "min_junction:   %.2f\n", $min_junction;
 printf "min_merged_cov: %.2f\n", $min_merged_cov;
 printf "min_ref_cov:    %.2f\n", $min_ref_cov;
-printf "w_conservation: %.2f  w_continuity: %.2f  w_gap: %.2f\n",
-    $w_conservation, $w_continuity, $w_gap;
-printf "min_msa_refs:   %d\n", $min_msa_refs;
 printf "threads:        %d\n",   $threads;
 print "-" x 60, "\n";
 
@@ -336,6 +259,7 @@ my @gff_header_lines;    # ##pragma and comment lines before first gene block
                     chrom        => $f[0],
                     strand       => $f[6],
                     frame_break  => $attrs{frame_break} // "",   # merge_split_genes.pl: junctions out of frame
+                    miniprot     => $attrs{miniprot}    // "",   # rebuild_with_miniprot.pl: SUPPORTED | NOT_SUPPORTED:<reason>
                 };
             }
         } elsif (defined $cur_gene_id) {
@@ -353,78 +277,6 @@ my $n_merged = scalar keys %merge_info;
 printf "  Merged genes found:       %d\n", $n_merged;
 printf "  Total genes in merged GFF: %d\n", scalar @gff_gene_order;
 die "ERROR: no merged genes (merged_from attribute) found in $merged_gff\n" unless $n_merged > 0;
-
-# ---------------------------------------------------------------------------
-# STEP B: Parse the original GFF
-#
-# For each gene, determine the representative transcript (longest total CDS)
-# and compute its total CDS bp length.
-#
-# Collect:
-#   %orig_tid_to_gene{tid}   = gene_id
-#   %orig_gene_cds_len{gid}  = total CDS bp of representative transcript
-#   %orig_gene_rep_tid{gid}  = transcript ID of representative transcript
-# ---------------------------------------------------------------------------
-print "\nSTEP B: Parsing original GFF for source gene CDS lengths...\n";
-
-my %orig_tid_to_gene;
-my %orig_gene_cds_len;    # gene_id -> CDS bp of representative transcript
-my %orig_gene_rep_tid;    # gene_id -> rep transcript ID
-
-{
-    # First pass: build gene -> transcripts map and transcript -> gene map
-    my %gene_transcripts;    # gene_id -> [tid, ...]
-    my %tid_cds_len;         # tid -> cumulative CDS bp
-
-    open my $fh, "<", $orig_gff or die "Cannot open $orig_gff: $!\n";
-    while (my $line = <$fh>) {
-        chomp $line;
-        next if $line =~ /^#/ || $line =~ /^\s*$/;
-        my @f = split /\t/, $line;
-        next unless @f >= 9;
-        my $feat = $f[2];
-        my %attrs = parse_attrs($f[8]);
-
-        if ($feat eq "mRNA") {
-            my $tid = $attrs{ID}     // next;
-            my $gid = $attrs{Parent} // next;
-            $orig_tid_to_gene{$tid} = $gid;
-            push @{ $gene_transcripts{$gid} }, $tid;
-            $tid_cds_len{$tid} //= 0;
-        } elsif ($feat eq "CDS") {
-            my $pid = $attrs{Parent} // next;
-            # Parent of CDS can be a transcript ID
-            my $cds_bp = $f[4] - $f[3] + 1;
-            $tid_cds_len{$pid} += $cds_bp;
-        }
-    }
-    close $fh;
-
-    # For each gene, pick representative transcript (longest CDS)
-    for my $gid (keys %gene_transcripts) {
-        my @tids = @{ $gene_transcripts{$gid} };
-        my $best_tid = $tids[0];
-        my $best_len = $tid_cds_len{$tids[0]} // 0;
-        for my $tid (@tids) {
-            my $len = $tid_cds_len{$tid} // 0;
-            if ($len > $best_len) {
-                $best_len = $len;
-                $best_tid = $tid;
-            }
-        }
-        $orig_gene_cds_len{$gid} = $best_len;
-        $orig_gene_rep_tid{$gid} = $best_tid;
-    }
-}
-
-# Build set of all source gene IDs we need
-my %need_source_gene;
-for my $gid (keys %merge_info) {
-    $need_source_gene{$_} = 1 for @{ $merge_info{$gid}{source_genes} };
-}
-my $n_src_found = grep { defined $orig_gene_cds_len{$_} } keys %need_source_gene;
-printf "  Source genes needed:  %d\n", scalar keys %need_source_gene;
-printf "  Found in orig GFF:    %d\n", $n_src_found;
 
 # ---------------------------------------------------------------------------
 # STEP C: Translate merged proteins with gffread
@@ -506,30 +358,6 @@ my $diamond_query_fa = "$scratch_dir/merged_proteins_clean.fa";
     }
     close $fh;
 }
-
-# ---------------------------------------------------------------------------
-# STEP D: Translate source gene proteins with gffread
-# ---------------------------------------------------------------------------
-print "\nSTEP D: Translating source proteins (gffread)...\n";
-
-my $source_prot_fa = "$scratch_dir/source_proteins.fa";
-run_cmd("$gffread_bin $orig_gff -g $genome_fa -y $source_prot_fa >> $gffread_log 2>&1",
-        "gffread translate original GFF");
-
-my ($src_prot_ref, $src_prot_order) = read_fasta($source_prot_fa);
-
-# Map source gene IDs to their representative protein sequence
-my %source_prot;  # gene_id -> protein sequence
-for my $tid (@$src_prot_order) {
-    my $gid = $orig_tid_to_gene{$tid} // next;
-    next unless $need_source_gene{$gid};
-    my $rep_tid = $orig_gene_rep_tid{$gid} // next;
-    next unless $tid eq $rep_tid;
-    (my $seq = $src_prot_ref->{$tid}) =~ s/[*.]$//;   # '*' or '.' (gffread), as for merged proteins
-    $source_prot{$gid} = $seq;
-}
-printf "  Source proteins extracted: %d / %d\n",
-    scalar keys %source_prot, scalar keys %need_source_gene;
 
 # ---------------------------------------------------------------------------
 # STEP E: Build or verify diamond database
@@ -641,118 +469,6 @@ my $n_hits = grep { scalar(@{ $gene_diamond_hits{$_} }) > 0 } keys %gene_diamond
 printf "  Merged genes with diamond hits: %d / %d\n", $n_hits, $n_merged;
 
 # ---------------------------------------------------------------------------
-# STEP G: Load reference proteome sequences (for MSA)
-# ---------------------------------------------------------------------------
-print "\nSTEP G: Loading reference proteome sequences...\n";
-
-my %ref_prot;  # hit_id -> sequence
-{
-    my ($rp, undef) = read_fasta($ref_fa);
-    %ref_prot = %$rp;
-}
-printf "  Reference sequences loaded: %d\n", scalar keys %ref_prot;
-
-# ---------------------------------------------------------------------------
-# STEP H: SwissProt diamond blast + load sequences (for MSA only)
-#
-# SwissProt (manually curated) gives better junction scoring than the species
-# reference proteome: no partial sequences, no annotation errors, no '.'
-# characters from N-containing codons.
-# Falls back to ref_fa sequences in the MAFFT loop when not set.
-# ---------------------------------------------------------------------------
-my %sprot_hits;  # new_gene_id -> [{sseqid, bitscore, ...}]
-my %sprot_prot;  # hit_id -> sequence
-my $use_sprot = 0;
-
-if (defined $swissprot_fa) {
-    print "\nSTEP H: SwissProt diamond blast (for MSA reference sequences)...\n";
-
-    # Build/verify SwissProt diamond DB
-    unless (defined $swissprot_db) {
-        # fall back: build in scratch dir (but normally passed via --swissprot_db from mender_db)
-        $swissprot_db = "$scratch_dir/swissprot.dmnd";
-    }
-    unless (-f $swissprot_db || -f "${swissprot_db}.dmnd") {
-        run_cmd("$diamond_bin makedb --in $swissprot_fa --db $swissprot_db --quiet",
-                "Build diamond database from swissprot_fa");
-    }
-    print "  SwissProt db: $swissprot_db\n";
-
-    my $sprot_out = "$scratch_dir/merged_vs_swissprot.tsv";
-    run_cmd(
-        "$diamond_bin blastp " .
-        "--db $swissprot_db " .
-        "--query $diamond_query_fa " .
-        "--out $sprot_out " .
-        "--outfmt 6 qseqid sseqid pident length qstart qend sstart send evalue bitscore scovhsp slen qcovhsp qlen " .
-        "--evalue $evalue " .
-        "--max-target-seqs 5 " .
-        "--threads $threads " .
-        "--quiet",
-        "Diamond blastp merged proteins vs SwissProt"
-    );
-
-    # Parse SwissProt hits
-    {
-        my %sprot_raw;
-        open my $sdh, "<", $sprot_out or die "Cannot open $sprot_out: $!\n";
-        while (my $line = <$sdh>) {
-            chomp $line;
-            my @f = split /\t/, $line;
-            next unless @f >= 14;
-            push @{ $sprot_raw{$f[0]} }, {
-                sseqid   => $f[1],
-                pident   => $f[2]+0,
-                bitscore => $f[9]+0,
-                scovhsp  => $f[10]+0,
-                slen     => $f[11]+0,
-            };
-        }
-        close $sdh;
-
-        for my $gid (keys %sprot_raw) {
-            my @sorted = sort { $b->{bitscore} <=> $a->{bitscore} } @{ $sprot_raw{$gid} };
-            my %seen;
-            my @top;
-            for my $h (@sorted) {
-                next if $seen{$h->{sseqid}}++;
-                push @top, $h;
-                last if @top >= $max_msa_refs;
-            }
-            $sprot_hits{$gid} = \@top;
-        }
-    }
-
-    # Collect all SwissProt hit IDs we need, then load just those sequences
-    my %need_sprot_ids;
-    for my $gid (keys %sprot_hits) {
-        $need_sprot_ids{$_->{sseqid}} = 1 for @{ $sprot_hits{$gid} };
-    }
-
-    if (%need_sprot_ids) {
-        open my $sfh, "<", $swissprot_fa or die "Cannot open $swissprot_fa: $!\n";
-        my $sid;
-        while (my $line = <$sfh>) {
-            chomp $line;
-            if ($line =~ /^>(\S+)/) {
-                $sid = $1;
-                $sid = undef unless $need_sprot_ids{$sid};
-            } elsif (defined $sid) {
-                $sprot_prot{$sid} .= $line;
-            }
-        }
-        close $sfh;
-    }
-
-    my $n_sprot_hits = grep { @{ $sprot_hits{$_} } > 0 } keys %sprot_hits;
-    printf "  Merged genes with SwissProt hits: %d / %d\n", $n_sprot_hits, $n_merged;
-    printf "  SwissProt sequences loaded: %d\n", scalar keys %sprot_prot;
-    $use_sprot = 1;
-} else {
-    print "\nSTEP H: Skipped (no --swissprot_fa — MSA will use ref_fa sequences)\n";
-}
-
-# ---------------------------------------------------------------------------
 # STEP I: Load optional merge table for flag annotations
 # ---------------------------------------------------------------------------
 my %merge_flags;  # merge_id -> flag string
@@ -779,303 +495,6 @@ if (defined $merge_table && -f $merge_table) {
 }
 
 # ---------------------------------------------------------------------------
-# STEP J: MAFFT junction scoring
-# ---------------------------------------------------------------------------
-my $msa_dir    = "$scratch_dir/msa";
-my $kalign_log = "$scratch_dir/kalign.log";
-
-make_path($msa_dir) if $keep_msa && !$no_msa;
-
-# Truncate kalign log at run start; each merge call appends to it.
-if (!$no_msa && $aligner eq "kalign3") {
-    open(my $fh, ">", $kalign_log) or warn "Cannot create $kalign_log: $!\n";
-    close $fh;
-}
-
-printf "\nSTEP J: MSA junction scoring (aligner: %s)...\n", $aligner unless $no_msa;
-printf "  kalign log: %s\n", $kalign_log if !$no_msa && $aligner eq "kalign3";
-print  "\nSTEP J: Skipping MSA (--no_msa)\n" if $no_msa;
-
-my %junction_scores;  # new_gene_id -> [score1, score2, ...]
-my %msa_flag;         # new_gene_id -> flag string
-
-my $pid = $$;  # for temp file naming
-
-my $mafft_done = 0;
-my @merge_ids_sorted = sort keys %merge_info;
-my $mafft_total = scalar @merge_ids_sorted;
-
-for my $gid (@merge_ids_sorted) {
-    $mafft_done++;
-    if ($mafft_done == 1 || $mafft_done % 50 == 0 || $mafft_done == $mafft_total) {
-        printf "  MSA: %d / %d (%.0f%%)\n",
-            $mafft_done, $mafft_total, 100 * $mafft_done / $mafft_total;
-    }
-    my @src_genes   = @{ $merge_info{$gid}{source_genes} };
-    my $merge_id    = $merge_info{$gid}{merge_id};
-    my @top_hits    = @{ $gene_diamond_hits{$gid} };  # ref hits (for NO_HIT check)
-    my @msa_hits    = $use_sprot                       # hits to use for MSA ref seqs
-                    ? @{ $sprot_hits{$gid} // [] }
-                    : @top_hits;
-    my $msa_prot_hr = $use_sprot ? \%sprot_prot : \%ref_prot;
-    my $n_junctions = scalar(@src_genes) - 1;
-
-    # --- No diamond hit: skip MSA entirely ---
-    if (!@top_hits) {
-        $msa_flag{$gid}      = "NO_HIT";
-        $junction_scores{$gid} = [];
-        next;
-    }
-
-    # --- --no_msa flag ---
-    if ($no_msa) {
-        $msa_flag{$gid}      = "SKIPPED";
-        $junction_scores{$gid} = [];
-        next;
-    }
-
-    # --- Build input FASTA for MAFFT ---
-    my @fasta_entries;
-    my $merged_label = "MERGED_${gid}";
-    $merged_label =~ s/[^A-Za-z0-9._-]/_/g;
-
-    unless (defined $merged_prot{$gid} && $merged_prot{$gid} ne "") {
-        $msa_flag{$gid}      = "WEAK_JUNCTION";
-        $junction_scores{$gid} = [];
-        next;
-    }
-    # Clean for MSA: remove internal stops, replace N-codon dots with X
-    (my $clean_merged = $merged_prot{$gid}) =~ s/\*//g;
-    $clean_merged =~ tr/./X/;
-    push @fasta_entries, [$merged_label, $clean_merged];
-
-    for my $sg (@src_genes) {
-        if (defined $source_prot{$sg} && $source_prot{$sg} ne "") {
-            (my $lbl = "SOURCE_${sg}") =~ s/[^A-Za-z0-9._-]/_/g;
-            (my $clean_src = $source_prot{$sg}) =~ s/\*//g;
-            $clean_src =~ tr/./X/;
-            push @fasta_entries, [$lbl, $clean_src];
-        } else {
-            print STDERR "WARN: no source protein for $sg in merge $merge_id\n";
-        }
-    }
-
-    # Top N ref sequences — use SwissProt hits if available, else ref_fa hits
-    my $n_refs_added = 0;
-    for my $hit (@msa_hits) {
-        last if $n_refs_added >= $max_msa_refs;
-        my $rid = $hit->{sseqid};
-        if (defined $msa_prot_hr->{$rid} && $msa_prot_hr->{$rid} ne "") {
-            (my $lbl = "REF_${rid}") =~ s/[^A-Za-z0-9._-]/_/g;
-            push @fasta_entries, [$lbl, $msa_prot_hr->{$rid}];
-            $n_refs_added++;
-        }
-    }
-
-    # Also add the best ref_fa hit (used for merge detection) when SwissProt is
-    # providing the MSA refs — it's the protein the source fragments tiled against,
-    # so seeing it in the alignment helps interpret junction quality.
-    if ($use_sprot && @top_hits) {
-        my $rid = $top_hits[0]{sseqid};
-        if (defined $ref_prot{$rid} && $ref_prot{$rid} ne "") {
-            (my $lbl = "REFPROT_${rid}") =~ s/[^A-Za-z0-9._-]/_/g;
-            push @fasta_entries, [$lbl, $ref_prot{$rid}];
-        }
-    }
-
-    # Need at least 2 sequences for MAFFT
-    if (@fasta_entries < 2) {
-        $msa_flag{$gid}      = "WEAK_JUNCTION";
-        $junction_scores{$gid} = [];
-        next;
-    }
-
-    # Write input FASTA
-    my $input_fa  = "${msa_dir}/${merge_id}_input.fa";
-    my $aligned_fa = "${msa_dir}/${merge_id}_aligned.fa";
-    unless ($keep_msa) {
-        $input_fa   = "/tmp/vmt_${pid}_${merge_id}_input.fa";
-        $aligned_fa = "/tmp/vmt_${pid}_${merge_id}_aligned.fa";
-    }
-    write_fasta($input_fa, @fasta_entries);
-
-    # Run aligner
-    my $merged_len = length($merged_prot{$gid});
-    my $aln_cmd;
-    if ($aligner eq "kalign3") {
-        $aln_cmd = "$kalign_bin -i $input_fa -f fasta -o $aligned_fa >> $kalign_log 2>&1";
-    } elsif ($aligner eq "mafft_auto") {
-        # --auto with speed fallback for very long proteins
-        my $opts = $merged_len > 5000
-            ? "--auto --retree 1 --reorder --quiet"
-            : "--auto --reorder --quiet";
-        $aln_cmd = "$mafft_bin $opts $input_fa > $aligned_fa 2>/dev/null";
-    } else {
-        # mafft_fast (default): FFT-NS-2, no iterative refinement
-        $aln_cmd = "$mafft_bin --retree 2 --maxiterate 0 --reorder --quiet $input_fa > $aligned_fa 2>/dev/null";
-    }
-    my $aln_ret = system($aln_cmd);
-    if ($aln_ret != 0) {
-        print STDERR "WARN: aligner ($aligner) failed for $merge_id (exit $aln_ret); flagging WEAK_JUNCTION\n";
-        $msa_flag{$gid}      = "WEAK_JUNCTION";
-        $junction_scores{$gid} = [];
-        unlink $input_fa, $aligned_fa unless $keep_msa;
-        next;
-    }
-
-    # Parse aligned FASTA
-    my ($aln_seqs, $aln_order) = read_fasta($aligned_fa);
-
-    # Find MERGED sequence in alignment (MAFFT may reorder sequences)
-    my ($aln_merged_id) = grep { /^MERGED_/ } @$aln_order;
-    unless (defined $aln_merged_id && defined $aln_seqs->{$aln_merged_id}) {
-        print STDERR "WARN: MERGED sequence missing from MAFFT output for $merge_id\n";
-        $msa_flag{$gid}      = "WEAK_JUNCTION";
-        $junction_scores{$gid} = [];
-        unlink $input_fa, $aligned_fa unless $keep_msa;
-        next;
-    }
-    my $aln_len = length($aln_seqs->{$aln_merged_id});
-    my @ref_ids_in_aln = grep { /^REF_/ } @$aln_order;
-
-    # Compute junction positions in unaligned merged protein aa coordinates
-    # J_k = floor( sum(CDS_bp for source genes 1..k) / 3 )
-    # Then map to alignment column.
-    my @junc_aa;     # junction positions in unaligned aa (1-based)
-    my $cumulative_bp = 0;
-    for my $k (0 .. $n_junctions - 1) {
-        my $sg = $src_genes[$k];
-        my $cds_bp = $orig_gene_cds_len{$sg} // 0;
-        if ($cds_bp == 0) {
-            print STDERR "WARN: CDS length unknown for $sg — junction $k position may be inaccurate\n";
-        }
-        $cumulative_bp += $cds_bp;
-        push @junc_aa, floor($cumulative_bp / 3);
-    }
-
-    # Score each junction
-    my @scores;
-    for my $junc_pos (@junc_aa) {
-        next if $junc_pos <= 0 || $junc_pos > length($merged_prot{$gid});
-        my $junc_col = unaligned_to_col($aln_seqs->{$aln_merged_id}, $junc_pos);
-        my ($score, undef, undef, undef) = score_junction(
-            $aln_seqs, $aln_order,
-            $aln_merged_id, \@ref_ids_in_aln,
-            $junc_col, $aln_len,
-            $junction_window,
-            $w_conservation, $w_continuity, $w_gap
-        );
-        push @scores, $score;
-    }
-
-    $junction_scores{$gid} = \@scores;
-
-    # Warn when the MSA has fewer reference sequences than the minimum; scores
-    # are less reliable with sparse reference support.
-    if ($n_refs_added < $min_msa_refs) {
-        my $warn = "WARN: $merge_id scored with only $n_refs_added reference sequence(s)"
-                 . " (min_msa_refs=$min_msa_refs) — junction score is low-confidence\n";
-        print STDERR $warn;
-        if ($kalign_log) {
-            open(my $fh, ">>", $kalign_log) or die "Cannot open $kalign_log: $!";
-            print $fh $warn;
-            close $fh;
-        }
-    }
-
-    # Assign msa_flag
-    if (!@scores) {
-        # No scoreable junctions (e.g., single-gene source with degenerate input)
-        $msa_flag{$gid} = "WEAK_JUNCTION";
-    } else {
-        my $min_score = min(@scores);
-        # GOOD_MSA: min junction score meets threshold AND no internal stop.
-        # GOOD_MSA_LOW_REF: same, but flagged as low-confidence due to sparse refs.
-        if ($min_score >= $min_junction && !$has_internal_stop{$gid}) {
-            $msa_flag{$gid} = $n_refs_added < $min_msa_refs ? "GOOD_MSA_LOW_REF" : "GOOD_MSA";
-        } else {
-            $msa_flag{$gid} = "WEAK_JUNCTION";
-        }
-    }
-
-    # Cleanup temp files unless keeping
-    unless ($keep_msa) {
-        unlink $input_fa, $aligned_fa;
-    }
-}
-
-# ---------------------------------------------------------------------------
-# STEP J helper: junction scoring sub
-# ---------------------------------------------------------------------------
-sub score_junction {
-    my ($aln_seqs, $aln_order, $merged_id, $ref_ids, $junc_col, $aln_len,
-        $window, $wc, $wt, $wg) = @_;
-
-    my $col_start = max(0, $junc_col - $window);
-    my $col_end   = min($aln_len - 1, $junc_col + $window);
-    my $n_cols    = $col_end - $col_start + 1;
-
-    my @ref_ids = @$ref_ids;
-
-    # Conservation uses merged + refs only; source fragments are excluded because
-    # they are identical to the corresponding halves of the merged protein by
-    # construction and would artificially inflate the consensus score.
-    my @cons_ids = ($merged_id, @ref_ids);
-
-    # --- Conservation score ---
-    my ($con_sum, $con_cols) = (0, 0);
-    for my $col ($col_start .. $col_end) {
-        my @chars = map { substr($aln_seqs->{$_}, $col, 1) } @cons_ids;
-        my @non_gap = grep { $_ ne '-' && $_ ne '.' } @chars;
-        next unless @non_gap;
-        my %cnt;
-        $cnt{$_}++ for @non_gap;
-        my $max_cnt = max(values %cnt);
-        $con_sum += $max_cnt / scalar(@non_gap);
-        $con_cols++;
-    }
-    my $conservation = $con_cols > 0 ? $con_sum / $con_cols : 0.0;
-
-    # --- Gap pattern score ---
-    # Penalise columns where MERGED has gap but REF sequences do not
-    my ($merged_gap_cols, $valid_cols) = (0, 0);
-    if (@ref_ids) {
-        for my $col ($col_start .. $col_end) {
-            my $mc = substr($aln_seqs->{$merged_id}, $col, 1);
-            my @rc = map { substr($aln_seqs->{$_}, $col, 1) } @ref_ids;
-            my @ref_non_gap = grep { $_ ne '-' && $_ ne '.' } @rc;
-            $valid_cols++;
-            $merged_gap_cols++ if ($mc eq '-' || $mc eq '.') && @ref_non_gap;
-        }
-    } else {
-        $valid_cols = $n_cols;
-    }
-    my $gap_pattern = $valid_cols > 0 ? 1 - ($merged_gap_cols / $valid_cols) : 0.5;
-
-    # --- Ref continuity score ---
-    # Fraction of REF sequences gapless across junc_col ± window (same window
-    # as conservation and gap pattern — previously used ±3, now unified to ±window).
-    my $ref_continuity;
-    if (@ref_ids) {
-        my $gapless_refs = 0;
-        for my $rid (@ref_ids) {
-            my $gapless = 1;
-            for my $col ($col_start .. $col_end) {
-                my $c = substr($aln_seqs->{$rid}, $col, 1);
-                if ($c eq '-' || $c eq '.') { $gapless = 0; last; }
-            }
-            $gapless_refs++ if $gapless;
-        }
-        $ref_continuity = $gapless_refs / scalar(@ref_ids);
-    } else {
-        $ref_continuity = 0.5;  # neutral when no ref available
-    }
-
-    my $score = $wc * $conservation + $wt * $ref_continuity + $wg * $gap_pattern;
-    return ($score, $conservation, $ref_continuity, $gap_pattern);
-}
-
-# ---------------------------------------------------------------------------
 # STEP K: PASS / FAIL / REVIEW assignment
 # ---------------------------------------------------------------------------
 print "\nSTEP K: Assigning PASS / FAIL / REVIEW...\n";
@@ -1084,7 +503,7 @@ my %results;  # new_gene_id -> { overall_result, fail_reasons }
 
 for my $gid (keys %merge_info) {
     my $transl_flag  = $has_internal_stop{$gid} ? "FRAMESHIFT_DETECTED" : "OK";
-    my $mflag        = $msa_flag{$gid}      // ($no_msa ? "SKIPPED" : "NO_HIT");
+    my $has_hit      = @{ $gene_diamond_hits{$gid} // [] } ? 1 : 0;
     my $cov          = $gene_cov_metrics{$gid};
     my $mrgd_cov     = $cov->{merged_cov_by_ref};
     my $ref_cov      = $cov->{ref_cov_by_merged};
@@ -1100,7 +519,13 @@ for my $gid (keys %merge_info) {
     if ($merge_info{$gid}{frame_break}) {
         push @fail_reasons, "FRAME_BREAK";
     }
-    if ($mflag eq "NO_HIT") {
+    # rebuild_with_miniprot.pl could not align the tiling reference protein across the
+    # merged locus as one gene (it covers only some fragments, has a frameshift or
+    # in-frame stop, or too little of the protein): not supported as one gene
+    if ($merge_info{$gid}{miniprot} =~ /^NOT_SUPPORTED/) {
+        push @fail_reasons, "NO_PROTEIN_SPAN";
+    }
+    if (!$has_hit) {
         push @fail_reasons, "NO_HIT";
     } elsif ($mrgd_cov < $min_merged_cov) {
         # One reference protein must cover most of the merged protein. This is the
@@ -1117,7 +542,6 @@ for my $gid (keys %merge_info) {
     } elsif ($transl_flag eq "OK"
           && $mrgd_cov >= $min_merged_cov
           && $ref_cov  >= $min_ref_cov) {
-        # msa_flag / junction scores are reported for review but do not decide
         $result = "PASS";
     } else {
         $result = "REVIEW";
@@ -1156,10 +580,7 @@ print $rep join("\t",
     "best_ref_pident",
     "ref_len",
     "n_ref_hits",
-    "junction_scores",
-    "min_junction_score",
-    "mean_junction_score",
-    "msa_flag",
+    "miniprot",
     "translation_flag",
     "source_flags",
     "fail_reasons",
@@ -1170,14 +591,7 @@ for my $gid (sort keys %merge_info) {
     my $info  = $merge_info{$gid};
     my $cov   = $gene_cov_metrics{$gid};
     my $res   = $results{$gid};
-    my @jscores = @{ $junction_scores{$gid} // [] };
-
-    my $min_js  = @jscores ? sprintf("%.4f", min(@jscores)) : ".";
-    my $mean_js = @jscores ? sprintf("%.4f", sum(@jscores) / scalar(@jscores)) : ".";
-    my $jscores_str = @jscores ? join("|", map { sprintf("%.4f", $_) } @jscores) : ".";
-
     my $fail_str = @{ $res->{fail_reasons} } ? join("|", @{ $res->{fail_reasons} }) : ".";
-    my $mflag    = $msa_flag{$gid} // ($no_msa ? "SKIPPED" : "NO_HIT");
     my $src_flag = $merge_flags{ $info->{merge_id} } // ".";
 
     print $rep join("\t",
@@ -1193,10 +607,7 @@ for my $gid (sort keys %merge_info) {
         sprintf("%.2f", $cov->{best_ref_pident}),
         $cov->{ref_len},
         $cov->{n_ref_hits},
-        $jscores_str,
-        $min_js,
-        $mean_js,
-        $mflag,
+        ($info->{miniprot} ne "" ? $info->{miniprot} : "not_run"),
         $res->{translation_flag},
         $src_flag,
         $fail_str,
@@ -1248,10 +659,7 @@ for my $gid (@gff_gene_order) {
 
     # Add translation validation flags to the gene feature line (first line of block)
     if (@block) {
-        my @jscores = @{ $junction_scores{$gid} // [] };
-        my $min_js  = @jscores ? sprintf("%.4f", min(@jscores)) : ".";
-        my $mflag   = $msa_flag{$gid} // ($no_msa ? "SKIPPED" : "NO_HIT");
-        $block[0] .= ";transl_result=$res;msa_flag=$mflag;min_junction_score=$min_js";
+        $block[0] .= ";transl_result=$res";
         $block[0] .= ";dropped_transcripts_internal_stop=" . join(",", @dropped) if @dropped;
     }
     print $fh "$_\n" for @block;
