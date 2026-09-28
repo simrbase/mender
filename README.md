@@ -346,6 +346,19 @@ paralogs so that different family members are more similar to one half than the
 other. This is not a signal of a false positive — it reflects the structure of
 the reference proteome, not the biology of the split.
 
+**Collinearity and fragment filters.** A pair is tested only if its pieces are in
+genomic order on the reference: on the + strand the upstream gene must align to the
+N-terminal part, on the − strand to the C-terminal part. A fragment hit must also cover
+at least `frag_min_qcov` (default 60%) of the query protein itself — a split fragment is
+a piece of the reference protein, while a multidomain protein aligning over one shared
+domain is not.
+
+**Fusion versus mis-split.** Protein tiling cannot tell an annotation that split one gene
+from a genuine gene fission: if the reference lineage *fused* two genes that are separate
+in your species (a "Rosetta Stone" fusion), the two genes tile on the reference exactly
+like fragments. Several reference species with the genes separate reduce the risk;
+transcript evidence spanning the junction (IsoSeq, RNA-seq assemblies) decides.
+
 **An important blind spot:** if the two halves have diverged enough to
 preferentially hit *different* reference proteins with no overlap between their
 hit lists, the pair will not appear in the output at all — the blast
@@ -398,6 +411,7 @@ protein evidence. Multiple flags are comma-separated in the `flag` column.
 | `WEAK_END` | Low-evidence terminal junction survived trimming |
 | `WEAK_INTERNAL` | Low-evidence internal junction survived splitting |
 | `LOW_COV` | Combined coverage <60% — likely domain sharing, not a split gene |
+| `JUNCTION_OVERHANG` | A piece extends more than `end_tol` aa (default 30) past its alignment at the junction — sequence the reference lacks at the break |
 
 **Structural concern flags:**
 
@@ -565,6 +579,7 @@ Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
 | `WEAK_END` | Terminal junction has 1–2 hits but survived trimming |
 | `WEAK_INTERNAL` | Internal junction has 1–2 hits but survived splitting |
 | `LOW_COV` | Combined coverage <60% — likely domain sharing, not a split gene |
+| `JUNCTION_OVERHANG` | A piece extends more than `end_tol` aa (default 30) past its alignment at the junction — sequence the reference lacks at the break |
 | `SKIPPED_GENE` | A non-adjacent gene sits inside the merge locus — check `skipped_genes` column and GFF before merging |
 | `TRANSITIVE_JOIN` | One or more consecutive gene pairs in the chain have no direct pairwise tiling evidence; connection is inferred transitively through other genes. `STRONG,TRANSITIVE_JOIN` warrants the same scrutiny as `WEAK_END`. `SINGLE_HIT,TRANSITIVE_JOIN` without IsoSeq is the highest-risk category. |
 | `MULTI_ISOFORM_JOIN` | At least one source gene has >1 transcript; merged gene will contain cross-product isoform combinations. Verify isoform structure before using isoform-level annotations. |

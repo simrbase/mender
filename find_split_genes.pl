@@ -5,12 +5,12 @@ use Getopt::Long qw(GetOptions);
 
 ## find_split_genes.pl
 ##
-## Identifies chameleon gene annotations that may have been erroneously split
-## during genome annotation. The core idea: if two or more adjacent chameleon
+## Identifies gene annotations that may have been erroneously split
+## during genome annotation. The core idea: if two or more adjacent
 ## genes each cover a non-overlapping portion of the same reference protein,
 ## they are candidates to be merged into a single gene.
 ##
-## Evidence comes from diamond blastp of chameleon proteins vs a well-annotated
+## Evidence comes from diamond blastp of the annotation's proteins vs a well-annotated
 ## reference proteome (e.g. Anolis). We look for adjacent gene pairs where:
 ##   1. Both genes hit the same reference protein as fragments (scovhsp <= 85%)
 ##   2. Their alignments tile on the reference protein (gap <= wiggle aa)
@@ -36,7 +36,7 @@ use Getopt::Long qw(GetOptions);
 ## split_genes_summary.txt
 ##   One row per gene pair that passes all filters. Best supporting hit only.
 ##   Columns:
-##     g1, g2             : the two chameleon gene IDs (genomic order)
+##     g1, g2             : the two gene IDs (genomic order)
 ##     g1_coord, g2_coord : chromosome.start.end for each gene
 ##     genomic_dist       : number of rank positions between g1 and g2
 ##                          (1 = directly adjacent, 2 = one gene between them, etc)
@@ -76,7 +76,7 @@ use Getopt::Long qw(GetOptions);
 ##   with preference for hits that have a real description over bare Ensembl IDs.
 ##   Columns:
 ##     merge_id              : unique identifier
-##     num_genes             : how many chameleon genes to merge
+##     num_genes             : how many genes to merge
 ##     genes_in_order        : comma-sep gene IDs in genomic order
 ##     coords_in_order       : comma-sep coordinates in genomic order
 ##     ref                   : chromosome
@@ -251,7 +251,7 @@ use Getopt::Long qw(GetOptions);
 ##   Brief: Comma-separated diamond evalues, one per gene in genomic order,
 ##          all vs the same chain best_hit reference protein.
 ##
-##   Detail: These come from your diamond blastp search of chameleon proteins
+##   Detail: These come from your diamond blastp search of the annotation's proteins
 ##           vs the reference proteome — NOT from the evalue strings embedded
 ##           in your fasta headers (those are from a different search).
 ##           A '?' means that gene had no diamond hit vs the chain best_hit
@@ -494,6 +494,9 @@ my $wiggle         = 15;  # aa wiggle room for tiling junction
 my $max_dist       =  4;  # max genomic rank distance between gene pair
 my $asym_threshold =  6;  # min hits on strong side to trigger trim/split
 my $low_cov_thresh = 60;  # combined_cov_pct below this gets LOW_COV flag
+my $max_evalue     = 1e-20;  # a fragment hit must have evalue <= this
+my $frag_min_qcov  = 60;  # a fragment must align over >= this % of ITSELF (qcovhsp)
+my $end_tol        = 30;  # aa a fragment may extend past its alignment at the junction side
 
 GetOptions(
     "no_asym_trim"         => \$no_asym_trim,
@@ -503,13 +506,16 @@ GetOptions(
     "wiggle=i"             => \$wiggle,
     "asym_threshold=i"     => \$asym_threshold,
     "low_cov_thresh=f"     => \$low_cov_thresh,
+    "max_evalue=f"         => \$max_evalue,
+    "frag_min_qcov=f"      => \$frag_min_qcov,
+    "end_tol=i"            => \$end_tol,
 ) or die "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] " .
          "[--max_dist N] [--wiggle N] [--asym_threshold N] [--low_cov_thresh N] " .
-         "blast gff subject_fa query_fa\n";
+         "[--max_evalue E] [--frag_min_qcov N] [--end_tol N] blast gff subject_fa query_fa\n";
 
 my $usage_str = "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] " .
                 "[--max_dist N] [--wiggle N] [--asym_threshold N] [--low_cov_thresh N] " .
-                "blast gff subject_fa query_fa\n";
+                "[--max_evalue E] [--frag_min_qcov N] [--end_tol N] blast gff subject_fa query_fa\n";
 my $blast      = shift or die $usage_str;
 my $gff        = shift or die $usage_str;
 my $subject_fa = shift or die $usage_str;
@@ -594,27 +600,31 @@ close GFF;
 # Sort all genes by chromosome then start position
 my @by_start = sort {
     $locs{$a}{ref}   cmp $locs{$b}{ref} ||
-    $locs{$a}{start} <=> $locs{$b}{start}
+    $locs{$a}{start} <=> $locs{$b}{start} ||
+    $locs{$b}{end}   <=> $locs{$a}{end}   ||   # the longer gene first: it is the parent
+    $a cmp $b
 } keys %locs;
 
 # ---------------------------------------------------------------------------
 # Identify nested genes: genes whose coordinates fall entirely within another
 # gene. These are excluded from the rank array because they would inflate the
 # apparent genomic distance between flanking genes.
-# Uses a sliding window lookback of 10 positions since nesting is always local.
+# Genes are visited in start order keeping, per chromosome, the gene reaching
+# furthest so far: a gene ending at or before that one's end lies inside it. (A
+# fixed look-back window missed genes inside long genes with more than 10 genes
+# in their introns.)
 # ---------------------------------------------------------------------------
 my %nested;  # nested_gene -> parent_gene
-for my $i (0 .. $#by_start) {
-    my $gene     = $by_start[$i];
-    my $lookback = $i < 10 ? 0 : $i - 10;
-    for my $j ($lookback .. $i-1) {
-        my $parent = $by_start[$j];
-        next unless $locs{$gene}{ref} eq $locs{$parent}{ref};
-        next if $locs{$parent}{end} < $locs{$gene}{start};
-        if ($locs{$gene}{end} <= $locs{$parent}{end}) {
-            $nested{$gene} = $parent;
-            last;
-        }
+my ($reach_ref, $reach_gene) = ("", undef);
+for my $gene (@by_start) {
+    if ($locs{$gene}{ref} ne $reach_ref) {
+        ($reach_ref, $reach_gene) = ($locs{$gene}{ref}, $gene);
+        next;
+    }
+    if ($locs{$gene}{end} <= $locs{$reach_gene}{end}) {
+        $nested{$gene} = $reach_gene;
+    } else {
+        $reach_gene = $gene;
     }
 }
 
@@ -683,15 +693,23 @@ while (my $line = <BLAST>){
     my $is_fragment = ($scovhsp <= $frag_scov_max)
         || (defined $qcovhsp && $qcovhsp >= $frag_qcov_min
             && $scovhsp < $frag_scov_soft);
+    # A split fragment is a piece of the reference protein: it aligns over most of
+    # ITSELF. A long multidomain protein aligning over one domain of the reference
+    # also has scovhsp <= 85 but is domain sharing, not a fragment.
+    $is_fragment = 0 if defined $qcovhsp && $qcovhsp < $frag_min_qcov;
 
-    if ($evalue <= 1e-20 && $is_fragment) {
-        # keep only the best-coverage HSP per gene-subject pair
+    if ($evalue <= $max_evalue && $is_fragment) {
+        # keep only the best-coverage HSP per gene-subject pair (ties: lower evalue)
         if (!exists $subjects{$subject}{$gene_id} ||
-             $subjects{$subject}{$gene_id}{cov} < $scovhsp){
+             $subjects{$subject}{$gene_id}{cov} < $scovhsp ||
+            ($subjects{$subject}{$gene_id}{cov} == $scovhsp && $evalue < $subjects{$subject}{$gene_id}{evalue})){
             $subjects{$subject}{$gene_id}{cov}    = $scovhsp;
             $subjects{$subject}{$gene_id}{sstart} = $sstart;
             $subjects{$subject}{$gene_id}{send}   = $send;
             $subjects{$subject}{$gene_id}{evalue} = $evalue;
+            $subjects{$subject}{$gene_id}{qstart} = $qstart;
+            $subjects{$subject}{$gene_id}{qend}   = $qend;
+            $subjects{$subject}{$gene_id}{qlen}   = $qlen;
         }
         $gene_hits{$gene_id}{$subject} = 1;
     }
@@ -735,6 +753,8 @@ print DETAIL join("\t",
 # Collect all reported pairs for downstream chaining into merge candidates
 # Also build a lookup: "g1\tg2" -> {num_tiling_hits, genomic_dist}
 my @all_pairs;
+my $n_not_collinear = 0;   # tiling tests skipped: the two pieces in the wrong order for the strand
+my %pair_overhang;  # "g1\tg2" -> aa past the alignment at the junction (best hit)
 my %pair_tiling;  # "g1\tg2" -> num_tiling_hits
 my %pair_dist;    # "g1\tg2" -> genomic_dist
 
@@ -761,7 +781,7 @@ for my $i (0 .. $#all_sorted - 1) {
             ? ($gene_hits{$g1}, $gene_hits{$g2})
             : ($gene_hits{$g2}, $gene_hits{$g1});
 
-        my @shared = grep { exists $big->{$_} } keys %$small;
+        my @shared = sort grep { exists $big->{$_} } keys %$small;   # sorted: ties never depend on hash order
         next unless @shared;
 
         my $best_hit      = undef;
@@ -774,6 +794,8 @@ for my $i (0 .. $#all_sorted - 1) {
         my $best_g1_eval  = undef;
         my $best_g2_eval  = undef;
         my $num_tiling    = 0;
+        my $best_ev_sum   = undef;
+        my $best_overhang = 0;
         my @tiling_hits;  # all hits that pass tiling filter, for detail output
 
         for my $hit (@shared) {
@@ -785,10 +807,30 @@ for my $i (0 .. $#all_sorted - 1) {
             # Tiling gap: how far apart are the two alignments on the subject?
             # Positive = gap between them, negative = they overlap slightly.
             # We allow abs(gap) <= wiggle to account for alignment fuzziness.
+            # Collinearity: g1 is upstream of g2 in the genome. On + the upstream
+            # gene encodes the N-terminal part, so g1 must align before g2 on the
+            # reference; on - the reverse. Pieces in the wrong order are not one
+            # gene split in two (inverted tandem copies, domain shuffles).
+            my $g1_first = $s1 < $s2 ? 1 : 0;
+            if ($g1_first != ($locs{$g1}{strand} eq "-" ? 0 : 1)) {
+                $n_not_collinear++;
+                next;
+            }
             my $gap = ($s1 < $s2) ? $s2 - $e1 : $s1 - $e2;
             next if abs($gap) > $wiggle;
 
             $num_tiling++;
+
+            # Junction overhang: the N-terminal piece should align up to its own
+            # C-terminus, the C-terminal piece from its own N-terminus; residues past
+            # the alignment at the junction are sequence the reference lacks there
+            my ($n_gene, $c_gene) = $g1_first ? ($g1, $g2) : ($g2, $g1);
+            my $n_hit = $subjects{$hit}{$n_gene};
+            my $c_hit = $subjects{$hit}{$c_gene};
+            my $overhang = 0;
+            $overhang = $n_hit->{qlen} - $n_hit->{qend} if defined $n_hit->{qlen} && $n_hit->{qlen} ne "";
+            my $c_over = defined $c_hit->{qstart} ? $c_hit->{qstart} - 1 : 0;
+            $overhang = $c_over if $c_over > $overhang;
 
             # Combined span: from the leftmost sstart to the rightmost send
             my $min_s = $s1 < $s2 ? $s1 : $s2;
@@ -801,6 +843,7 @@ for my $i (0 .. $#all_sorted - 1) {
             push @tiling_hits, {
                 hit    => $hit,
                 pct    => $pct,
+                overhang => $overhang,
                 gap    => $gap,
                 g1_r   => "$s1-$e1",
                 g2_r   => "$s2-$e2",
@@ -810,7 +853,12 @@ for my $i (0 .. $#all_sorted - 1) {
                 g2_ev  => $subjects{$hit}{$g2}{evalue},
             };
 
-            if ($pct > $best_pct) {
+            # best = highest combined coverage; ties by summed evalue, then subject id
+            my $ev_sum = $subjects{$hit}{$g1}{evalue} + $subjects{$hit}{$g2}{evalue};
+            if (!defined $best_hit || $pct > $best_pct
+                || ($pct == $best_pct && $ev_sum < $best_ev_sum)) {
+                $best_ev_sum   = $ev_sum;
+                $best_overhang = $overhang;
                 $best_pct      = $pct;
                 $best_hit      = $hit;
                 $best_gap      = $gap;
@@ -872,8 +920,10 @@ for my $i (0 .. $#all_sorted - 1) {
             g1_eval    => $best_g1_eval,
             g2_eval    => $best_g2_eval,
             num_tiling => $num_tiling,
+            overhang   => $best_overhang,
         };
         $pair_tiling{"$g1\t$g2"} = $num_tiling;
+        $pair_overhang{"$g1\t$g2"} = $best_overhang;
         $pair_dist{"$g1\t$g2"}   = $gdist;
     }
 }
@@ -1063,7 +1113,9 @@ sub select_chain_best_hit {
     my $best_span     = 0;
     my $best_has_desc = 0;
 
-    for my $hit (keys %candidate_hits) {
+    # most chain genes first (the evidence), then a described hit (readability),
+    # then the longest span; sorted candidates, so remaining ties go to the lower id
+    for my $hit (sort keys %candidate_hits) {
         my @with_hit = grep { exists $subjects{$hit}{$_} } @ordered;
         my $n = scalar @with_hit;
         next unless $n > 1;
@@ -1073,13 +1125,10 @@ sub select_chain_best_hit {
         my $span  = $max_e - $min_s + 1;
         my $has_desc = ($desc{$hit} // "") =~ /[\s\|]/ ? 1 : 0;
 
-        if (!defined $best_hit) {
-            $best_hit = $hit; $best_n = $n; $best_span = $span; $best_has_desc = $has_desc;
-        } elsif ($has_desc && !$best_has_desc) {
-            $best_hit = $hit; $best_n = $n; $best_span = $span; $best_has_desc = $has_desc;
-        } elsif (!$has_desc && $best_has_desc) {
-            next;
-        } elsif ($n > $best_n || ($n == $best_n && $span > $best_span)) {
+        if (!defined $best_hit
+            || $n > $best_n
+            || ($n == $best_n && $has_desc > $best_has_desc)
+            || ($n == $best_n && $has_desc == $best_has_desc && $span > $best_span)) {
             $best_hit = $hit; $best_n = $n; $best_span = $span; $best_has_desc = $has_desc;
         }
     }
@@ -1125,6 +1174,12 @@ sub compute_flags {
     # they require transcript-level evidence (IsoSeq isoform data) to validate.
     push @flags, "MULTI_ISOFORM_JOIN"
         if grep { ($gene_n_transcripts{$_} // 1) > 1 } @ordered;
+
+    # JUNCTION_OVERHANG: at some junction a piece extends more than end_tol aa past
+    # its best alignment on the junction side -- sequence the reference lacks there
+    # (a mispredicted exon at the break, or two different proteins)
+    push @flags, "JUNCTION_OVERHANG"
+        if grep { ($pair_overhang{"$ordered[$_]\t$ordered[$_+1]"} // 0) > $end_tol } 0 .. $#ordered - 1;
 
     # 2-gene pairs: only SINGLE_HIT possible beyond the above
     if (@ordered == 2) {
@@ -1214,14 +1269,15 @@ my $n_trimmed  = 0;
 my $n_split    = 0;
 
 for my $chain (sort {
-    my $a_gene = (sort { $locs{$a}{start} <=> $locs{$b}{start} } keys %{$a->{genes}})[0];
-    my $b_gene = (sort { $locs{$a}{start} <=> $locs{$b}{start} } keys %{$b->{genes}})[0];
+    my $a_gene = (sort { $locs{$a}{start} <=> $locs{$b}{start} || $a cmp $b } keys %{$a->{genes}})[0];
+    my $b_gene = (sort { $locs{$a}{start} <=> $locs{$b}{start} || $a cmp $b } keys %{$b->{genes}})[0];
     $locs{$a_gene}{ref} cmp $locs{$b_gene}{ref} ||
-    $locs{$a_gene}{start} <=> $locs{$b_gene}{start}
+    $locs{$a_gene}{start} <=> $locs{$b_gene}{start} ||
+    $a_gene cmp $b_gene
 } @chains) {
 
     # genes in genomic order before refinement
-    my @raw_ordered = sort { $locs{$a}{start} <=> $locs{$b}{start} }
+    my @raw_ordered = sort { $locs{$a}{start} <=> $locs{$b}{start} || $a cmp $b }
                       keys %{ $chain->{genes} };
 
     # apply trimming and splitting — may return multiple pieces
@@ -1313,6 +1369,7 @@ for my $chain (sort {
 
 close MERGE;
 
+print STDERR "Tiling tests skipped (pieces in the wrong order for the strand): $n_not_collinear\n";
 print STDERR "Gene pairs reported: ",  scalar @all_pairs,       "\n";
 print STDERR "Chains before refine: ", scalar @chains,          "\n";
 print STDERR "Chains trimmed:       ", $n_trimmed,              "\n";

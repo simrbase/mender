@@ -335,6 +335,7 @@ my @gff_header_lines;    # ##pragma and comment lines before first gene block
                     source_genes => \@src,
                     chrom        => $f[0],
                     strand       => $f[6],
+                    frame_break  => $attrs{frame_break} // "",   # merge_split_genes.pl: junctions out of frame
                 };
             }
         } elsif (defined $cur_gene_id) {
@@ -444,6 +445,7 @@ my ($mrgd_prot_ref, $mrgd_prot_order) = read_fasta($merged_prot_fa);
 
 my %merged_prot;           # new_gene_id -> protein sequence (representative)
 my %has_internal_stop;     # new_gene_id -> 0/1
+my %tid_internal_stop;     # merged transcript id -> 0/1 (every transcript, not just the representative)
 my %internal_stop_pos;     # new_gene_id -> comma-sep positions or "."
 my %merged_prot_len;       # new_gene_id -> aa length (after stripping terminal *)
 
@@ -460,6 +462,7 @@ for my $tid (@$mrgd_prot_order) {
     my @ipos;
     while ($seq =~ /[*.]/g) { push @ipos, pos($seq) }
     my $has_stop = @ipos ? 1 : 0;
+    $tid_internal_stop{$tid} = $has_stop;
 
     # pick representative: prefer no internal stops, then longest
     if (!exists $merged_prot{$gid}) {
@@ -522,7 +525,7 @@ for my $tid (@$src_prot_order) {
     next unless $need_source_gene{$gid};
     my $rep_tid = $orig_gene_rep_tid{$gid} // next;
     next unless $tid eq $rep_tid;
-    (my $seq = $src_prot_ref->{$tid}) =~ s/\*$//;
+    (my $seq = $src_prot_ref->{$tid}) =~ s/[*.]$//;   # '*' or '.' (gffread), as for merged proteins
     $source_prot{$gid} = $seq;
 }
 printf "  Source proteins extracted: %d / %d\n",
@@ -1092,6 +1095,11 @@ for my $gid (keys %merge_info) {
     if ($transl_flag eq "FRAMESHIFT_DETECTED") {
         push @fail_reasons, "INTERNAL_STOP";
     }
+    # merge_split_genes.pl found a junction where the downstream fragment is out of
+    # frame: its translation is wrong whether or not a stop happens to appear
+    if ($merge_info{$gid}{frame_break}) {
+        push @fail_reasons, "FRAME_BREAK";
+    }
     if ($mflag eq "NO_HIT") {
         push @fail_reasons, "NO_HIT";
     } elsif ($mrgd_cov < $min_merged_cov && $mflag ne "GOOD_MSA") {
@@ -1216,12 +1224,29 @@ for my $gid (@gff_gene_order) {
     my $fh  = $result_fh{$res} // next;
     my @block = @{ $gene_blocks{$gid} // [] };
 
+    # A merged gene is judged by its best transcript, but a multi-isoform merge
+    # carries N x M cross-product transcripts: those with an internal stop are not
+    # written to the PASS file (with their exons/CDS/UTRs); the gene records them.
+    my @dropped;
+    if ($res eq "PASS") {
+        my %drop = map { $_ => 1 } grep { $tid_internal_stop{$_} && ($mrgd_tid_to_gene{$_} // "") eq $gid } keys %tid_internal_stop;
+        if (%drop) {
+            @block = grep {
+                my @f = split "\t", $_;
+                my %a = @f >= 9 ? parse_attrs($f[8]) : ();
+                !(($f[2] // "") eq "mRNA" && $drop{$a{ID} // ""}) && !$drop{$a{Parent} // ""};
+            } @block;
+            @dropped = sort keys %drop;
+        }
+    }
+
     # Add translation validation flags to the gene feature line (first line of block)
     if (@block) {
         my @jscores = @{ $junction_scores{$gid} // [] };
         my $min_js  = @jscores ? sprintf("%.4f", min(@jscores)) : ".";
         my $mflag   = $msa_flag{$gid} // ($no_msa ? "SKIPPED" : "NO_HIT");
         $block[0] .= ";transl_result=$res;msa_flag=$mflag;min_junction_score=$min_js";
+        $block[0] .= ";dropped_transcripts_internal_stop=" . join(",", @dropped) if @dropped;
     }
     print $fh "$_\n" for @block;
 }

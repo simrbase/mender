@@ -136,6 +136,8 @@ my $max_dist           = cfg("merge_filters", "max_dist",           "4");
 my $wiggle             = cfg("merge_filters", "wiggle",             "15");
 my $asym_threshold     = cfg("merge_filters", "asym_threshold",     "6");
 my $low_cov_thresh     = cfg("merge_filters", "low_cov_thresh",     "60");
+my $frag_min_qcov      = cfg("merge_filters", "frag_min_qcov",      "60");
+my $end_tol            = cfg("merge_filters", "end_tol",            "30");
 
 # validation (gt + agat)
 my $run_gt    = cfg("validation", "run_gt",   "yes");
@@ -208,6 +210,8 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
         wiggle               => $wiggle,
         asym_threshold       => $asym_threshold,
         low_cov_thresh       => $low_cov_thresh,
+        frag_min_qcov        => $frag_min_qcov,
+        end_tol              => $end_tol,
         isoseq_min_spanning  => $isoseq_min_span,
         min_msa_refs         => $tv_min_msa_refs,
         max_msa_refs         => $tv_max_msa_refs,
@@ -657,6 +661,7 @@ if ($run_steps{4}) {
         ($wiggle           ? "--wiggle $wiggle "                          : "") .
         ($asym_threshold   ? "--asym_threshold $asym_threshold "         : "") .
         ($low_cov_thresh   ? "--low_cov_thresh $low_cov_thresh "         : "") .
+        "--frag_min_qcov $frag_min_qcov --end_tol $end_tol --max_evalue $evalue " .
         "$diamond_out " .
         "$gff " .
         "$subject_fa " .
@@ -713,6 +718,12 @@ if ($run_steps{6}) {
     $merge_cmd .= " --require_isoseq $require_isoseq"  if $require_isoseq;
     $merge_cmd .= " --isoseq_min_spanning $isoseq_min_span" if $isoseq_min_span > 0;
     $merge_cmd .= " --removed $removed_gff";
+    # the genome lets the merge trim a fragment's last codon only when it is a stop
+    if ($genome_fa && -e "$genome_fa.fai") {
+        $merge_cmd .= " --genome_fa $genome_fa";
+    } else {
+        print "WARNING: genome_fa or its .fai index (samtools faidx) missing: fragment stop codons are trimmed unchecked\n";
+    }
     $merge_cmd .= " --gene_template  \"$gene_template\"";
     $merge_cmd .= " --trans_template \"$trans_template\"";
     $merge_cmd .= " $validated_table $gff $output_gff";
@@ -1160,6 +1171,8 @@ if ($run_steps{10}) {
     $r->("  wiggle:                     ${wiggle} aa");
     $r->("  asym_threshold:             ${asym_threshold}");
     $r->("  low_cov_thresh:             ${low_cov_thresh}%");
+    $r->("  frag_min_qcov:              ${frag_min_qcov}%");
+    $r->("  end_tol:                    ${end_tol} aa");
     $r->("");
     $r->("[validation]");
     $r->("  run_translation_validation: " . ($run_transl_val =~ /^no$/i ? "no" : "yes"));

@@ -64,6 +64,8 @@ section. Copy `mender.cfg.example` to a project-specific name before editing.
 | `wiggle` | Maximum allowed gap or overlap (aa) between two fragment alignments on the reference protein | `15` | Positive = gap; negative = overlap. Increase for distant reference proteomes |
 | `asym_threshold` | Tiling-hit count on the strong side of a junction needed to trigger asymmetric trimming | `6` | Only applies when `asym_trim = yes` |
 | `low_cov_thresh` | Combined reference coverage (%) below which `LOW_COV` is assigned | `60` | Controls the flag only; candidates are not removed unless `LOW_COV` is in `skip_flags` |
+| `frag_min_qcov` | Minimum % of the query protein a fragment hit must cover (qcovhsp) | `60` | Removes domain-sharing hits from the fragment pool: a split fragment aligns over most of itself |
+| `end_tol` | aa a piece may extend past its alignment on the junction side | `30` | Controls the `JUNCTION_OVERHANG` flag only |
 
 ---
 

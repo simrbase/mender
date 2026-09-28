@@ -23,12 +23,23 @@ use warnings;
 ##   CDS phase values are recalculated from scratch after joining.
 ##
 ##   Every source transcript except the true 3'-most one in the chain (by
-##   genomic coordinate, not list order) has its own terminal CDS segment
-##   trimmed by one codon before pooling, to remove that fragment's native
-##   stop codon -- an artifact of the original (incorrectly split) annotation.
-##   Without this, the merged CDS translates through an internal stop at every
-##   fragment boundary. Trimming a whole codon (3nt) never shifts frame for
-##   the downstream fragment.
+##   genomic coordinate, not list order) has its native stop codon trimmed
+##   from the 3' end of its CDS before pooling -- an artifact of the original
+##   (incorrectly split) annotation. Without this, the merged CDS translates
+##   through an internal stop at every fragment boundary. With --genome_fa the
+##   last codon is read from the genome and trimmed only if it IS a stop
+##   (TAA/TAG/TGA): a fragment whose model does not end in a stop keeps all its
+##   codons (recorded as no_stop_trimmed=<transcripts> on the new gene).
+##   Without --genome_fa the last codon is always trimmed (the older behaviour)
+##   and a warning is printed. The trim walks back across CDS segments, so a
+##   stop codon split by an intron is removed correctly.
+##
+##   Reading frame across junctions: each fragment's codons are defined by its
+##   own first-CDS phase. The merged CDS is in frame only if, at every
+##   junction, the coding length before it leaves the next fragment starting
+##   on its own codon boundary. Junctions where it does not are recorded as
+##   frame_break=<upstream>><downstream> on the new gene and mRNA, and printed as
+##   a WARNING; the translation validation step fails such merges.
 ##
 ## New gene ID scheme:
 ##   New genes are assigned IDs starting at CCA3g100001000.1, incrementing
@@ -55,6 +66,8 @@ use warnings;
 ##   --removed FILE     filename for removed genes GFF (default: removed_genes.gff)
 ##   --dry_run          report what would be merged without writing any files
 ##   --date YYYY-MM-DD  date string for merge_date attribute (default: today)
+##   --genome_fa FILE   genome FASTA with a samtools faidx index (FILE.fai); used
+##                      to trim a fragment's last codon only when it is a stop
 ##
 ## Output files:
 ##   output.gff           full annotation with merged genes replacing source genes
@@ -85,12 +98,11 @@ use warnings;
 ##
 ## CDS phase recalculation:
 ##   After joining CDS features from multiple source transcripts, phases are
-##   recalculated from the start of the CDS (phase 0 for first CDS feature,
-##   then tracking frame across features). This is necessary because the
-##   original phase values assumed the CDS started at that gene's fragment.
-##   NOTE: this recalculation assumes the merged transcript is in-frame end
-##   to end. If the split happened mid-codon the recalculated phases may be
-##   off by 1-2. Manual review of merged CDS structure is recommended.
+##   recalculated in transcription order: the first CDS keeps its original
+##   phase (a 5'-partial first fragment is not forced to 0), and every later
+##   CDS gets phase = (3 - (coding bases so far % 3)) % 3, as GFF3 defines it.
+##   The recalculation assumes the merged transcript is in frame end to end;
+##   junctions where it is not are flagged frame_break (see above).
 ##
 ## Notes on input GFF:
 ##   The GFF must be sorted so that parent features appear before their
@@ -271,6 +283,7 @@ my $spanning_rescue   = 0;
 my $removed_file      = "removed_genes.gff";
 my $dry_run           = 0;
 my $date              = strftime("%Y-%m-%d", localtime);
+my $genome_fa         = "";
 
 # New gene ID template options
 # Templates use bracket notation to define ID structure:
@@ -325,6 +338,7 @@ GetOptions(
     "date=s"               => \$date,
     "gene_template=s"      => \$gene_template,
     "trans_template=s"     => \$trans_template,
+    "genome_fa=s"          => \$genome_fa,
 ) or die "Error in options\n";
 
 my $usage = "usage: $0 [options] isoseq_validated.txt input.gff output.gff\n";
@@ -416,6 +430,13 @@ sub build_trans_id {
 # parse the templates
 my $gene_tmpl  = parse_id_template($gene_template);
 my $trans_tmpl = parse_id_template($trans_template);
+
+if ($genome_fa) {
+    genome_open($genome_fa);
+} else {
+    print STDERR "WARNING: no --genome_fa: every non-final fragment loses its last codon as a stop, "
+               . "unchecked (a fragment that does not end in a stop loses a real codon)\n";
+}
 
 # ---------------------------------------------------------------------------
 # Pass 1: scan GFF to find highest existing gene counter matching template
@@ -772,38 +793,134 @@ sub line_coords {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: recalculate CDS phases for a sorted list of CDS lines on + strand
-# or - strand. Phase = (3 - (cumulative_length % 3)) % 3
-# For - strand, CDS features are sorted descending by coordinate.
+# Helper: recalculate CDS phases for a list of CDS lines on + or - strand, in
+# transcription order (ascending start for +, descending end for -).
+# GFF3: phase = number of bases to skip at the start of a CDS segment to reach
+# the first base of the next codon = (3 - (coding bases before it % 3)) % 3,
+# where "coding bases before it" counts from the first CDS's own phase. The
+# first CDS keeps its original phase ('.' = 0), so a 5'-partial first fragment
+# stays in frame. (Before 2026-09-28 the running total subtracted each phase,
+# which gave wrong phases after the first non-zero one: lengths 100,50,40,61
+# gave 0,2,2,0 instead of 0,2,0,2.)
 # ---------------------------------------------------------------------------
 sub recalc_phases {
     my ($cds_lines_ref, $strand) = @_;
-    my @cds = @$cds_lines_ref;
+    my @cds = transcription_order($cds_lines_ref, $strand);
+    return () unless @cds;
 
-    # sort by coordinate: ascending for +, descending for -
-    if ($strand eq "+") {
-        @cds = sort { (split "\t", $a)[3] <=> (split "\t", $b)[3] } @cds;
-    } else {
-        @cds = sort { (split "\t", $b)[4] <=> (split "\t", $a)[4] } @cds;
-    }
-
-    my $cumulative = 0;
+    my $first_phase = (split "\t", $cds[0])[7];
+    $first_phase = 0 unless defined $first_phase && $first_phase =~ /^[012]$/;
+    my $cumulative = -$first_phase;   # coding bases before the next segment, from the first codon
     my @result;
     for my $line (@cds) {
         my @f = split "\t", $line;
-        my $len   = $f[4] - $f[3] + 1;
-        my $phase = (3 - ($cumulative % 3)) % 3;
-        $f[7] = $phase;
+        my $len = $f[4] - $f[3] + 1;
+        $f[7] = (3 - ($cumulative % 3)) % 3;
         push @result, join("\t", @f);
-        $cumulative += $len - $phase;
+        $cumulative += $len;
     }
     return @result;
+}
+
+# GFF lines in transcription order: ascending start on +, descending end on -
+sub transcription_order {
+    my ($lines_ref, $strand) = @_;
+    return $strand eq "-"
+        ? sort { (split "\t", $b)[4] <=> (split "\t", $a)[4] } @$lines_ref
+        : sort { (split "\t", $a)[3] <=> (split "\t", $b)[3] } @$lines_ref;
+}
+
+# ---------------------------------------------------------------------------
+# Genome access through the samtools faidx index (no whole-genome load)
+# ---------------------------------------------------------------------------
+my (%fai, $genome_fh);
+sub genome_open {
+    my ($fasta) = @_;
+    open my $idx, "<", "$fasta.fai"
+        or die "ERROR: --genome_fa needs an index $fasta.fai (run: samtools faidx $fasta)\n";
+    while (my $line = <$idx>) {
+        chomp $line;
+        my ($name, $len, $offset, $line_bases, $line_width) = split "\t", $line;
+        $fai{$name} = [$len, $offset, $line_bases, $line_width];
+    }
+    close $idx;
+    open $genome_fh, "<", $fasta or die "cant open genome $fasta: $!\n";
+}
+
+# sequence of chr:start-end (1-based, inclusive), upper case
+sub genome_seq {
+    my ($chr, $start, $end) = @_;
+    my $entry = $fai{$chr} or die "ERROR: sequence '$chr' is not in $genome_fa.fai\n";
+    my ($len, $offset, $line_bases, $line_width) = @$entry;
+    my $seq = "";
+    for my $pos ($start .. $end) {
+        die "ERROR: $chr:$pos is outside the sequence (length $len)\n" if $pos < 1 || $pos > $len;
+        my $zero = $pos - 1;
+        seek $genome_fh, $offset + int($zero / $line_bases) * $line_width + $zero % $line_bases, 0;
+        read $genome_fh, my $base, 1;
+        $seq .= $base;
+    }
+    return uc $seq;
+}
+
+sub revcomp {
+    my ($seq) = @_;
+    ($seq = reverse $seq) =~ tr/ACGTNacgtn/TGCANtgcan/;
+    return $seq;
+}
+
+# the last $n coding bases of a CDS set, in transcription order, read across segments
+sub cds_last_bases {
+    my ($cds_lines_ref, $strand, $n) = @_;
+    my @cds = reverse transcription_order($cds_lines_ref, $strand);   # 3'-most first
+    my $bases = "";
+    for my $line (@cds) {
+        my @f = split "\t", $line;
+        my $take = $n - length $bases;
+        last if $take <= 0;
+        my $seg_len = $f[4] - $f[3] + 1;
+        $take = $seg_len if $take > $seg_len;
+        my $piece = $strand eq "-"
+            ? revcomp(genome_seq($f[0], $f[3], $f[3] + $take - 1))
+            : genome_seq($f[0], $f[4] - $take + 1, $f[4]);
+        $bases = $piece . $bases;
+    }
+    return $bases;
+}
+
+# remove $n coding bases from the 3' end of a transcript's CDS, walking back
+# across segments (a stop codon split by an intron); segments emptied are dropped.
+# Works on the transcript's full feature list; returns the new list.
+sub trim_cds_3prime {
+    my ($feat_lines_ref, $strand, $n) = @_;
+    my @lines = @$feat_lines_ref;
+    while ($n > 0) {
+        my @cds_idx = grep { (split "\t", $lines[$_])[2] eq "CDS" } 0 .. $#lines;
+        last unless @cds_idx;
+        my $term_idx = $strand eq "-"
+            ? (sort { (split "\t", $lines[$a])[3] <=> (split "\t", $lines[$b])[3] } @cds_idx)[0]
+            : (sort { (split "\t", $lines[$b])[4] <=> (split "\t", $lines[$a])[4] } @cds_idx)[0];
+        my @ff  = split "\t", $lines[$term_idx];
+        my $len = $ff[4] - $ff[3] + 1;
+        if ($len > $n) {
+            if ($strand eq "-") { $ff[3] += $n } else { $ff[4] -= $n }
+            $lines[$term_idx] = join("\t", @ff);
+            $n = 0;
+        } else {
+            splice @lines, $term_idx, 1;
+            $n -= $len;
+        }
+    }
+    return @lines;
 }
 
 # ---------------------------------------------------------------------------
 # Build merge operations: for each merge group, construct the new gene
 # ---------------------------------------------------------------------------
 my %genes_to_remove;  # gene_id -> 1
+my %no_stop;          # new gene id -> [source transcripts whose CDS did not end in a stop: not trimmed]
+my %frame_break;      # new gene id -> [junctions "upstream>downstream" where the frame breaks]
+my $prev_tid;
 my @new_gene_blocks;  # each element is a list of GFF lines for one new gene
 
 my $n_merged       = 0;
@@ -981,35 +1098,61 @@ for my $group (@merge_groups) {
         }
 
         # collect sub-features by type from all source transcripts
-        my %by_type;  # type -> [lines]
+        my %by_type;       # type -> [lines]
+        my %fragment_cds;  # tid -> [its CDS lines after trimming], for the frame check
         for my $tid (@source_tids) {
             my @feat_lines = @{ $transcript_features{$tid} // [] };
 
             if ($tid ne $final_tid) {
-                # trim this transcript's own terminal (3'-most) CDS segment by
-                # one codon (its native stop) so it doesn't get translated as
-                # an internal stop once pooled with the next fragment's CDS
-                my @cds_idx = grep { (split "\t", $feat_lines[$_])[2] eq "CDS" } 0 .. $#feat_lines;
-                if (@cds_idx) {
-                    my $term_idx = $strand eq "+"
-                        ? (sort { (split "\t", $feat_lines[$b])[4] <=> (split "\t", $feat_lines[$a])[4] } @cds_idx)[0]
-                        : (sort { (split "\t", $feat_lines[$a])[3] <=> (split "\t", $feat_lines[$b])[3] } @cds_idx)[0];
-                    my @ff  = split "\t", $feat_lines[$term_idx];
-                    my $len = $ff[4] - $ff[3] + 1;
-                    if ($len > 3) {
-                        if ($strand eq "+") { $ff[4] -= 3 } else { $ff[3] += 3 }
-                        $feat_lines[$term_idx] = join("\t", @ff);
-                    } else {
-                        # terminal CDS segment is nothing but the stop codon -- drop it
-                        splice @feat_lines, $term_idx, 1;
+                # remove this fragment's native stop codon from the 3' end of its
+                # CDS so it is not translated as an internal stop once pooled with
+                # the next fragment -- only if it is a stop, when the genome is known
+                my @cds_lines = grep { (split "\t", $_)[2] eq "CDS" } @feat_lines;
+                if (@cds_lines) {
+                    my $trim = 1;
+                    if ($genome_fa) {
+                        my $codon = cds_last_bases(\@cds_lines, $strand, 3);
+                        $trim = $codon =~ /^(?:TAA|TAG|TGA)$/ ? 1 : 0;
+                        push @{ $no_stop{$new_gene_id} }, $tid unless $trim;
                     }
+                    @feat_lines = trim_cds_3prime(\@feat_lines, $strand, 3) if $trim;
                 }
             }
+            $fragment_cds{$tid} = [ grep { (split "\t", $_)[2] eq "CDS" } @feat_lines ];
 
             for my $feat_line (@feat_lines) {
                 my @ff = split "\t", $feat_line;
                 push @{ $by_type{ $ff[2] } }, $feat_line;
             }
+        }
+
+        # reading frame across junctions, in transcription order: after each
+        # fragment, the next one must start on its own codon boundary (its own
+        # first-CDS phase), or the downstream part translates out of frame
+        my @tx_tids = grep { @{ $fragment_cds{$_} } } @source_tids;
+        @tx_tids = $strand eq "-"
+            ? sort { (split "\t", $transcript_line{$b})[4] <=> (split "\t", $transcript_line{$a})[4] } @tx_tids
+            : sort { (split "\t", $transcript_line{$a})[3] <=> (split "\t", $transcript_line{$b})[3] } @tx_tids;
+        my @frame_breaks;
+        my $coding = undef;   # coding bases so far, counted from the first codon
+        for my $tid (@tx_tids) {
+            my @cds = transcription_order($fragment_cds{$tid}, $strand);
+            my $phase = (split "\t", $cds[0])[7];
+            $phase = 0 unless defined $phase && $phase =~ /^[012]$/;
+            if (defined $coding) {
+                my $expected = (3 - ($coding % 3)) % 3;
+                push @frame_breaks, "$prev_tid>$tid" if $expected != $phase;
+            } else {
+                $coding = -$phase;
+            }
+            $coding += $_->[4] - $_->[3] + 1 for map { [split "\t", $_] } @cds;
+            $prev_tid = $tid;
+        }
+        if (@frame_breaks) {
+            push @{ $frame_break{$new_gene_id} }, @frame_breaks;
+            print STDERR "WARNING: reading frame breaks at junction(s) ", join(",", @frame_breaks),
+                         " in $new_tid [$merge_id]: the downstream fragment translates out of frame\n";
+            $t_line .= ";frame_break=" . join(",", @frame_breaks);
         }
 
         # sort each feature type by coordinate (ascending for +, desc for -)
@@ -1126,6 +1269,8 @@ for my $group (@merge_groups) {
     # mark source genes for removal
     for my $g (@genes) { $genes_to_remove{$g} = 1; }
 
+    $new_gene_line .= ";no_stop_trimmed=" . join(",", @{ $no_stop{$new_gene_id} }) if $no_stop{$new_gene_id};
+    $new_gene_line .= ";frame_break=" . join(",", @{ $frame_break{$new_gene_id} }) if $frame_break{$new_gene_id};
     push @new_gene_blocks, [$new_gene_line, @new_transcript_blocks];
     $n_merged++;
 }
