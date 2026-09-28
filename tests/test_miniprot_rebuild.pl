@@ -11,6 +11,8 @@ use FindBin;
 #   M7  two different adjacent genes merged by mistake: NOT_SUPPORTED (the reference covers one)
 #   M8  the reference's N-terminus differs from the gene's: miniprot starts downstream of the start
 #       codon; the 5' fragment's own ATG completes the model (start_codon=from_fragment)
+#   M9  the reference's C-terminus differs: miniprot ends before the stop codon; the 3' fragment's own
+#       stop completes the model (stop_codon=from_fragment)
 # Needs miniprot and samtools in PATH (skipped otherwise). Exit 0 = all pass.
 
 for my $tool (qw(miniprot samtools)) {
@@ -59,6 +61,7 @@ my %chr = (chrS => $seq);
 
 # M8: the same genome, but the reference protein's first 30 aa differ from the gene's
 my $ref_ntdiff = random_protein(30) . substr($protein, 30);
+my $ref_ctdiff = substr($protein, 0, -30) . join('', map { $AA[int rand @AA] } 1 .. 30);   # M9
 
 # M7: gene X (one exon) then gene Y (one exon), unrelated proteins
 my $px = random_protein(200); my $py = random_protein(180);
@@ -97,11 +100,13 @@ $g->('chrS', 'B', '+', @exons[2, 3]);
 $g->('chrW', 'X', '+', [$x_start, $x_end]);
 $g->('chrW', 'Y', '+', [$y_start, $y_end]);
 write_file("$dir/in.gff", join("\n", @gff) . "\n");
-write_file("$dir/ref.fa", ">REFP\n$protein\n>REFND\n$ref_ntdiff\n>REFX\n$px\n");
+write_file("$dir/ref.fa", ">REFP\n$protein\n>REFND\n$ref_ntdiff\n>REFCD\n$ref_ctdiff\n>REFX\n$px\n");
 write_file("$dir/merges.txt", join("\t", qw(merge_id genes_in_order flag max_tiling_hits best_combined_cov_pct best_hit)) . "\n"
   . "merge_1\tA,B\tCLEAN\t3\t95\tREFP\nmerge_2\tX,Y\tCLEAN\t3\t95\tREFX\n");
 write_file("$dir/merges_nd.txt", join("\t", qw(merge_id genes_in_order flag max_tiling_hits best_combined_cov_pct best_hit)) . "\n"
   . "merge_1\tA,B\tCLEAN\t3\t95\tREFND\n");
+write_file("$dir/merges_cd.txt", join("\t", qw(merge_id genes_in_order flag max_tiling_hits best_combined_cov_pct best_hit)) . "\n"
+  . "merge_1\tA,B\tCLEAN\t3\t95\tREFCD\n");
 
 my $bin = "$FindBin::Bin/..";
 system("perl $bin/merge_split_genes.pl --genome_fa $dir/genome.fa --removed $dir/removed.gff $dir/merges.txt $dir/in.gff $dir/merged.gff > $dir/merge.log 2>&1") == 0
@@ -152,6 +157,14 @@ my @s8 = sort { $a->[1] <=> $b->[1] } @{ $cds_nd->{merge_1} // [] };
 my $nt8 = join('', map { substr($chr{$_->[0]}, $_->[1] - 1, $_->[2] - $_->[1] + 1) } @s8);
 (my $tr8 = translate($nt8)) =~ s/\*$//;
 check($tr8 eq $protein, 'M8: the completed model translates to the whole gene, from its M', substr($tr8, 0, 40) . '...');
+
+# M9: C-terminus differs -> stop completed from fragment B
+my ($gene_cd, $cds_cd) = $rebuild->("$dir/merges_cd.txt", 'cd');
+check(scalar(($gene_cd->{merge_1} // '') =~ /stop_codon=from_fragment:B/), 'M9: miniprot ends before the stop; fragment B\'s stop completes the model', $gene_cd->{merge_1});
+my @s9 = sort { $a->[1] <=> $b->[1] } @{ $cds_cd->{merge_1} // [] };
+my $nt9 = join('', map { substr($chr{$_->[0]}, $_->[1] - 1, $_->[2] - $_->[1] + 1) } @s9);
+my $tr9 = translate($nt9);
+check($tr9 eq "$protein*", 'M9: the completed model translates to the whole gene and ends in its stop codon', substr($tr9, -40));
 
 print $failed ? "\n$failed FAILED, $passed passed\n" : "all $passed checks passed\n";
 exit($failed ? 1 : 0);

@@ -306,7 +306,40 @@ for my $gid (map { $_->[1] } grep { $_->[0] eq "mender" } @order) {
         }
     }
     set_phases(\@tx, $start_note eq "incomplete" ? $tx[0][2] : 0);
+
+    # Stop codon, the same way at the 3' end: when miniprot's model ends without a stop codon
+    # (the reference's C-terminus is not conserved), the 3'-most source fragment was called
+    # with its own stop. When miniprot's last coding base lies inside one of that fragment's
+    # CDS segments, at the end of a codon in the fragment's reading frame, and the fragment
+    # ends in a stop codon, the fragment's CDS from there on completes the model. Otherwise
+    # the model is kept as it is, marked stop_codon=absent -- never extended into genome
+    # sequence no annotation covered, where the first stop found is usually the wrong one.
     my $end_note = $mp_stop ? "present" : "absent";
+    if (!$mp_stop) {
+        my ($three) = sort { $strand eq "-" ? $source_span{$a}[0] <=> $source_span{$b}[0] : $source_span{$b}[1] <=> $source_span{$a}[1] }
+                      grep { $source_span{$_} && $source_cds{$_} } @sources;
+        my @fcds = $three ? map { [@$_] } @{ $source_cds{$three}{cds} } : ();
+        @fcds = $strand eq "-" ? sort { $b->[1] <=> $a->[1] } @fcds : sort { $a->[0] <=> $b->[0] } @fcds;
+        my $model_coding = -$tx[0][2];
+        $model_coding += $_->[1] - $_->[0] + 1 for @tx;
+        if (@fcds && $model_coding % 3 == 0) {
+            my $f_stop = genome_bases($g->{chr}, ($strand eq "-" ? ($fcds[-1][0], $fcds[-1][0] + 2) : ($fcds[-1][1] - 2, $fcds[-1][1])), $strand);
+            my $mp_last = $strand eq "-" ? $tx[-1][0] : $tx[-1][1];
+            my ($k) = grep { $fcds[$_][0] <= $mp_last && $mp_last <= $fcds[$_][1] } 0 .. $#fcds;
+            if ($f_stop =~ /^(?:TAA|TAG|TGA)$/ && defined $k) {
+                my $offset = -$fcds[0][2];   # fragment coding bases up to and including miniprot's last base
+                $offset += $fcds[$_][1] - $fcds[$_][0] + 1 for 0 .. $k - 1;
+                $offset += $strand eq "-" ? $fcds[$k][1] - $mp_last + 1 : $mp_last - $fcds[$k][0] + 1;
+                my $at_segment_end = $strand eq "-" ? $mp_last == $fcds[$k][0] : $mp_last == $fcds[$k][1];
+                if ($offset > 0 && $offset % 3 == 0 && !($at_segment_end && $k == $#fcds)) {
+                    if ($strand eq "-") { $tx[-1][0] = $fcds[$k][0] } else { $tx[-1][1] = $fcds[$k][1] }
+                    push @tx, map { [@$_] } @fcds[$k + 1 .. $#fcds];
+                    $end_note = "from_fragment:$three";
+                    set_phases(\@tx, $tx[0][2]);
+                }
+            }
+        }
+    }
     $attrs .= ";start_codon=$start_note;stop_codon=$end_note";
     $gene_attr{$gid} = $attrs;
     my @sorted = sort { $a->[0] <=> $b->[0] } @tx;
