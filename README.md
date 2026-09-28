@@ -76,9 +76,9 @@ there. Do not edit it directly; copy it to a project-specific name first.
 | `perl` | Run all scripts | yes |
 | `diamond` | blastp of query proteome vs reference | yes |
 | `bedtools` | IsoSeq read–gene overlap | only if `isoseq_gff` is set |
-| `gffread` | Translate merged and source CDS (step 8); export protein/CDS/transcript FASTAs (step 10) | required for steps 8 and 10; skip both to avoid this dependency |
-| `mafft` | Multiple sequence alignment for junction scoring (Step 8) | only if translation validation is on, `no_msa = no`, and `aligner = mafft_fast` or `mafft_auto` |
-| `kalign3` | Alternative MSA aligner (faster than MAFFT; recommended) | only if translation validation is on, `no_msa = no`, and `aligner = kalign3` |
+| `gffread` | Translate merged CDS (step 8); export protein/CDS/transcript FASTAs (step 10) | required for steps 8 and 10; skip both to avoid this dependency |
+| `miniprot` | Rebuild merged genes from the tiling reference protein (step 6) | when `run_miniprot = yes` (default) |
+| `samtools` | Extract the merged locus for miniprot (`samtools faidx`; `genome_fa` needs a `.fai` index) | when `run_miniprot = yes` |
 | `gt` (GenomeTools) | GFF3 spec validation of merged genes (Step 7) | optional |
 | `agat` | Biological GFF consistency check of passing merges (Step 9) | optional |
 
@@ -87,7 +87,7 @@ config file.
 
 ```bash
 # Install the tools you need via conda (customize this list for your run)
-conda install -c bioconda diamond bedtools gffread mafft genometools-genometools agat perl
+conda install -c bioconda diamond bedtools gffread miniprot samtools genometools-genometools agat perl
 ```
 
 ---
@@ -159,9 +159,9 @@ Use `--steps 4,6` to run only specific steps, or omit `--steps` to run all.
 | 3 | bedtools | `bedtools intersect` | IsoSeq reads vs gene models — skipped if no `isoseq_gff` |
 | 4 | find | `find_split_genes.pl` | Identify split gene candidates from diamond output |
 | 5 | isoseq | `validate_merge_with_isoseq.pl` | Add IsoSeq spanning read evidence — skipped if no `isoseq_gff` |
-| 6 | merge | `merge_split_genes.pl` | Apply merges to the GFF; write new merged genes |
+| 6 | merge | `merge_split_genes.pl`, `rebuild_with_miniprot.pl` | Apply merges to the GFF; rebuild each merged gene from its tiling reference protein with miniprot |
 | 7 | gt | `gt gff3validator` | Fast GFF3 spec check on new Mender genes only; non-fatal |
-| 8 | transl | `validate_merge_translation.pl` | Translate merged proteins, score junctions, assign PASS/FAIL/REVIEW |
+| 8 | transl | `validate_merge_translation.pl` | Translate merged proteins, measure reference coverage, assign PASS/FAIL/REVIEW |
 | 9 | agat | `agat_convert_sp_gxf2gxf.pl` | Gene-model check on PASS GFF only; slow, optional |
 | 10 | fasta | `gffread` | Export protein, CDS, and transcript FASTAs from the final validated GFF |
 
@@ -169,27 +169,25 @@ Steps 3 and 5 are automatically skipped when `isoseq_gff` is not set.
 Step 8 is skipped when `run_translation_validation = no` in config.
 Step 9 is skipped when `run_agat = no` in config.
 
-### Step 8 internal sub-steps (A–L)
+### Step 8 internal sub-steps
 
-Step 8 (`validate_merge_translation.pl`) runs its own internal sequence of
-lettered steps. These are **not individually selectable** via `--steps` — they
-always run in order as part of step 8. Use `--no_msa` or `run_translation_validation = no`
-to control the scope of step 8 from the config.
+Step 8 (`validate_merge_translation.pl`) runs these in order (not individually
+selectable; `run_translation_validation = no` skips step 8):
 
 | Sub-step | Description |
 |----------|-------------|
-| A | Parse merged GFF — collect new gene IDs, source gene lists, GFF blocks |
-| B | Parse original GFF — get representative transcript and CDS length per source gene |
+| A | Parse merged GFF — new gene IDs, source gene lists, GFF blocks, the miniprot result on each gene |
 | C | Translate merged proteins (gffread); write clean FASTA for diamond |
-| D | Translate source gene proteins (gffread) |
 | E | Build or verify diamond database from ref_fa |
 | F | Diamond blastp merged proteins vs reference proteome; compute coverage metrics |
-| G | Load reference proteome sequences into memory |
-| H | SwissProt diamond blast (if configured); load hit sequences for MSA |
 | I | Load merge table for flag annotations |
-| J | MSA junction scoring — align merged + source + SwissProt ref (+ best ref_fa hit) proteins; score each junction. Aligner set via `aligner` config (kalign3 recommended). |
-| K | Assign PASS / FAIL / REVIEW per merge; write `transl_result`, `msa_flag`, `min_junction_score` into GFF attributes |
+| K | Assign PASS / FAIL / REVIEW per merge; write `transl_result` into GFF attributes |
 | L | Write outputs into `--out` directory: `report.tsv`, `pass.gff3`, `fail.gff3`, `review.gff3`, `pass_proteins.fa` |
+
+The MSA junction scoring (former sub-steps B, D, G, H, J) was removed on 2026-09-28: in a
+negative control of 100 deliberately false merges every one scored GOOD_MSA, the same range
+as real merges. The miniprot rebuild in step 6 and the reference coverage in step 8 separate
+them (see "Rebuilding merged genes with miniprot").
 
 ---
 
@@ -493,7 +491,7 @@ perl merge_split_genes.pl \
 When run via `run_mender.pl`, the merge outputs land in `results/<prefix>/`:
 - `merges.gff` — complete merged annotation
 - `removed.gff` — source genes removed
-- `validated.gff` — **recommended for downstream use**; FAIL merges (and optionally REVIEW) replaced with their original source genes; retained Mender genes carry `transl_result`, `msa_flag`, `min_junction_score` GFF attributes (added by step 8)
+- `validated.gff` — **recommended for downstream use**; FAIL merges (and optionally REVIEW) replaced with their original source genes; retained Mender genes carry the `transl_result` GFF attribute (added by step 8)
 - `validated.proteins.fa` — protein sequences from the final validated GFF (step 10)
 - `validated.cds.fa` — CDS sequences from the final validated GFF (step 10)
 - `validated.mrna.fa` — transcript sequences from the final validated GFF (step 10)
@@ -541,7 +539,7 @@ Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
 20:isoseq_flag            FULL_SPAN | PARTIAL_SPAN | NO_SPANNERS
 ```
 
-### `report.tsv` (20 columns, step 8 output)
+### `report.tsv` (17 columns, step 8 output)
 ```
 1:merge_id              merge group identifier (from merge table)
 2:new_gene_id           Mender gene ID in the merged GFF
@@ -555,14 +553,11 @@ Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
 10:best_ref_pident      % identity to best_ref_hit
 11:ref_len              length of best_ref_hit (aa)
 12:n_ref_hits           number of distinct reference hits found
-13:junction_scores      pipe-sep per-junction MSA scores (one per source-gene junction)
-14:min_junction_score   lowest per-junction score across all junctions
-15:mean_junction_score  mean per-junction score
-16:msa_flag             GOOD_MSA | GOOD_MSA_LOW_REF | WEAK_JUNCTION | NO_HIT | SKIPPED
-17:translation_flag     OK | FRAMESHIFT_DETECTED
-18:source_flags         flag column from the merge table (step 4/5)
-19:fail_reasons         pipe-sep reasons for FAIL, or "."
-20:overall_result       PASS | FAIL | REVIEW
+13:miniprot             SUPPORTED | NOT_SUPPORTED:<reason> | not_run (step 6 rebuild)
+14:translation_flag     OK | FRAMESHIFT_DETECTED
+15:source_flags         flag column from the merge table (step 4/5)
+16:fail_reasons         pipe-sep reasons for FAIL, or "."
+17:overall_result       PASS | FAIL | REVIEW
 ```
 
 ---
@@ -596,38 +591,34 @@ Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
 
 ### Translation validation flags (`report.tsv`)
 
-**`translation_flag` (column 17):**
+**`miniprot` (column 13):** `SUPPORTED` (model rebuilt from the tiling reference protein),
+`NOT_SUPPORTED:<reason>` (`covers_N_of_M_sources`, `frameshift`, `inframe_stop`, `protein_cov_X`,
+`no_alignment`, `no_reference_protein`), or `not_run`.
+
+**`translation_flag` (column 14):**
 
 | Value | Meaning |
 |-------|---------|
 | `OK` | No internal stop codons in the merged CDS translation |
 | `FRAMESHIFT_DETECTED` | Internal stop codon(s) found — see `internal_stop_pos` for positions |
 
-**`msa_flag` (column 16):**
-
-| Value | Meaning |
-|-------|---------|
-| `GOOD_MSA` | Min junction MSA score ≥ threshold; no internal stop |
-| `GOOD_MSA_LOW_REF` | Same as `GOOD_MSA` but fewer than `min_msa_refs` reference sequences were available — score is less reliable |
-| `WEAK_JUNCTION` | Min junction score below threshold, or aligner failed |
-| `NO_HIT` | No diamond hit found for the merged protein |
-| `SKIPPED` | MSA was skipped (`--no_msa`) |
-
-**`fail_reasons` (column 19):**
+**`fail_reasons` (column 16):**
 
 | Value | Meaning |
 |-------|---------|
 | `INTERNAL_STOP` | Merged CDS has an internal stop codon |
+| `FRAME_BREAK` | A fragment junction leaves the downstream fragment out of frame |
+| `NO_PROTEIN_SPAN` | miniprot NOT_SUPPORTED: the reference protein does not span the merge as one gene |
 | `LOW_MERGED_COV` | Merged protein covers less than `min_merged_cov` of its best reference hit |
 | `NO_HIT` | No reference hit found for the merged protein |
 
-**`overall_result` (column 20):**
+**`overall_result` (column 17):**
 
 | Value | Meaning |
 |-------|---------|
-| `PASS` | Clean translation, coverage thresholds met, junction MSA score above threshold |
-| `FAIL` | At least one fail reason; merged gene should not be used without review |
-| `REVIEW` | No hard fail criteria but PASS criteria not fully met — inspect before use |
+| `PASS` | No fail reason; reference coverage thresholds met |
+| `FAIL` | At least one fail reason; source genes are restored in `validated.gff` |
+| `REVIEW` | No fail reason, but the merged protein covers < `min_ref_cov` of its reference |
 
 ---
 
@@ -685,7 +676,7 @@ Mender does not run BUSCO; this is a check for the user. (Example, *Congeria kus
 Trinity + TransDecoder complete 99.5%, MAKER gene models 84.1% complete, 5.3% fragmented.)
 Prefer transcripts supported by more than one library or tissue.
 
-## Rebuilding merged genes with miniprot (in development)
+## Rebuilding merged genes with miniprot
 
 `merge_split_genes.pl` joins the fragments' own exons, so the joined "intron" has no real
 splice sites and an exon missing at the break stays missing. `rebuild_with_miniprot.pl`

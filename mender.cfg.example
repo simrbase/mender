@@ -112,9 +112,9 @@ results_dir = results
 ## Default: mender_workdir
 workdir = mender_workdir
 
-## db_dir: directory for shared diamond databases (reference proteome and SwissProt).
+## db_dir: directory for shared diamond databases (the reference proteome).
 ## These are expensive to build and reused across runs — not deleted between runs.
-## subject.dmnd (from subject_fa) and swissprot.dmnd are stored here.
+## subject.dmnd (from subject_fa) is stored here.
 ## Default: mender_db
 db_dir = mender_db
 
@@ -225,7 +225,7 @@ fix_partial = yes
 ## Conservative run (protein evidence only, no IsoSeq):
 ##   skip_flags = SKIPPED_GENE,LOW_COV,SINGLE_HIT,TRANSITIVE_JOIN,LARGE_SPAN_EXTREME
 ##
-## Liberal run (then validate merges with translation/MSA step):
+## Liberal run (then validate merges with the miniprot rebuild and translation step):
 ##   skip_flags = LOW_COV
 ##   (use the translation validation output to filter the result)
 ##
@@ -351,118 +351,71 @@ end_tol = 30
 ##
 ## Optional validation steps run after merging.
 ## Steps 7 (gt) and 9 (agat) require gt (GenomeTools) and agat to be installed.
-## Step 8 (translation validation) requires gffread, diamond, and mafft.
-## These steps are validation only — they do not modify the output GFF.
+## Step 8 (translation validation) requires gffread and diamond.
 
-## run_gt: yes/no — run gt gff3validator on the full merged GFF (step 7, fast).
-## Checks strict GFF3 spec compliance. Useful for catching frame issues.
+## run_gt: yes/no — run gt gff3validator on the Mender-created genes (step 7, fast).
+## Checks strict GFF3 spec compliance.
 run_gt = yes
 
 ## run_translation_validation: yes/no — run validate_merge_translation.pl (step 8).
-## Translates merged proteins, runs diamond + MAFFT, assigns PASS/FAIL/REVIEW.
-## Produces _pass.gff3, _fail.gff3, _review.gff3 subsets.
+## Translates merged proteins, runs diamond against subject_fa, assigns
+## PASS/FAIL/REVIEW. Produces pass.gff3, fail.gff3, review.gff3 subsets.
+## FAIL reasons: INTERNAL_STOP, FRAME_BREAK, NO_PROTEIN_SPAN (miniprot did not
+## support the merge), LOW_MERGED_COV, NO_HIT.
 ## Set to no to skip (e.g. when genome_fa is unavailable or for a quick run).
 run_translation_validation = yes
 
-## min_junction_score: per-junction MSA score reported as msa_flag (GOOD_MSA /
-## WEAK_JUNCTION). Informational only: it does not decide PASS/FAIL, because it
-## does not separate false merges from real ones (see config_reference.md).
-min_junction_score = 0.5
-
-## min_merged_cov: minimum fraction of merged protein covered by best ref hit.
-## This is the check that separates true from false merges. Default: 0.80.
+## min_merged_cov: minimum fraction of the merged protein covered by its best
+## reference hit. This is the check that separates true from false merges: in a
+## Congeria kusceri negative control (100 adjacent pairs of distinct genes merged
+## on purpose) 0.80 kept 89/93 real merges and 12/100 false ones. Default: 0.80.
 min_merged_cov = 0.80
 
-## min_ref_cov: minimum fraction of best ref protein covered by merged protein.
-## Default: 0.50.
+## min_ref_cov: minimum fraction of best ref protein covered by merged protein;
+## below it the merge is REVIEW. Default: 0.50.
 min_ref_cov = 0.50
 
-## no_msa: yes/no — skip MSA entirely; report translation + diamond only.
-## Faster but loses junction scoring. PASS requires GOOD_MSA unless no_msa = yes.
-no_msa = no
-
-## aligner: MSA tool and strategy for junction scoring.
-##   mafft_fast  (default) — mafft --retree 2 --maxiterate 0
-##                           FFT-NS-2; no iterative refinement.
-##                           ~2–3× faster than mafft_auto; effectively identical
-##                           accuracy for small sets of related proteins.
-##   mafft_auto  — mafft --auto; slower but uses the most accurate MAFFT
-##                 strategy for the input size. Recommended for keep_msa = yes
-##                 (inspection runs where you read the alignments by eye).
-##   kalign3     — kalign3 progressive aligner; ~5–10× faster than mafft_auto.
-##                 Requires kalign to be in PATH or set via kalign_bin below.
-##                 Accuracy slightly lower for divergent sequences; suitable
-##                 when speed matters more than fine-grained junction scoring.
-aligner = mafft_fast
-
-## MSA junction scoring weights.
-## Three sub-scores are combined into a single junction score (range 0–1):
-##   w_conservation — fraction of positions in the ±5 aa window where the merged
-##                    protein and reference sequences agree on the majority residue.
-##                    Computed over merged + refs only (source fragments excluded).
-##   w_continuity   — fraction of reference sequences that are completely gap-free
-##                    across the ±5 aa junction window.  Measures whether the junction
-##                    falls in a well-conserved region of the protein family.
-##   w_gap          — fraction of window columns where the merged protein does NOT
-##                    introduce a gap relative to reference sequences.  The most
-##                    direct measure of merge-introduced alignment disruption.
-##
-## Weights must sum to exactly 1.0.  The defaults give equal weight to
-## conservation and continuity and slightly more to the gap penalty, which is
-## the most principled of the three metrics.
-w_conservation = 0.3
-w_continuity   = 0.3
-w_gap          = 0.4
-
-## min_msa_refs: minimum number of reference sequences required in the MSA for
-## the junction score to be considered fully reliable.  When fewer refs are
-## available, the merge is still scored but flagged GOOD_MSA_LOW_REF (instead of
-## GOOD_MSA) and a warning is written to STDERR.  The PASS/FAIL/REVIEW outcome
-## is unchanged — the flag lets you filter low-confidence calls in the TSV.
-## Set to 1 to suppress warnings for single-reference alignments.
-min_msa_refs = 2
-
-## max_msa_refs: maximum number of reference sequences to include in each MSA.
-## Diamond is run with --max-target-seqs 5, so values above 5 have no effect
-## unless you also increase the diamond search depth.  More refs improve the
-## robustness of the junction score (especially the gap-pattern metric), but
-## very distant homologs in positions 4–5 can dilute conservation signal.
-## Default: 3.  Increase to 5 to use all available diamond hits.
-max_msa_refs = 3
-
-## keep_msa: yes/no — write per-merge alignment files to <results_prefix>_msa/.
-## Useful for inspecting individual junction alignments. Disk-intensive on large runs.
-keep_msa = no
-
-## swissprot_fa: path to UniProt/SwissProt FASTA for MSA reference sequences.
-## Manually curated proteins give better junction scoring than the species
-## reference proteome (no partial sequences, no annotation errors).
-## Falls back to ref_fa sequences if blank or file not found.
-##
-## To download SwissProt:
-##   wget https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.fasta.gz
-##   gunzip uniprot_sprot.fasta.gz
-##   diamond makedb --in uniprot_sprot.fasta --db uniprot_sprot.dmnd
-swissprot_fa =
-
-## swissprot_db: override path for the pre-built SwissProt diamond DB.
-## Normally derived automatically as <db_dir>/swissprot.dmnd; only set this if you
-## want to use a SwissProt DB stored outside of db_dir.
-swissprot_db =
+## (The MSA junction scoring -- min_junction_score, no_msa, aligner, w_*,
+## min_msa_refs, max_msa_refs, keep_msa, swissprot_fa, swissprot_db -- was
+## removed: it did not separate false merges from real ones. Those keys are
+## ignored with a warning.)
 
 ## final_gff_include_review: yes/no — include REVIEW merges in the final validated GFF.
-## REVIEW merges passed basic translation checks but have borderline MSA junction scores.
-## yes (default): REVIEW merges are kept — trusts IsoSeq + tiling evidence; MSA flag is
-##                informational. Recommended when IsoSeq data is available.
-## no: REVIEW merges are replaced with source genes — requires a clean MSA score to be
-##     included. More conservative; use when IsoSeq coverage is sparse.
+## REVIEW = no failure, but the merged protein covers less than min_ref_cov of its
+## reference (a still-incomplete gene).
+## yes (default): REVIEW merges are kept.
+## no: REVIEW merges are replaced with their source genes (more conservative).
 final_gff_include_review = yes
 
 ## run_agat: yes/no — run agat_convert_sp_gxf2gxf.pl (step 9, slow).
-## Runs on the _pass.gff3 from step 8 (or full merged GFF if step 8 was skipped).
+## Runs on the pass.gff3 from step 8 (or full merged GFF if step 8 was skipped).
 ## Checks gene-model consistency (CDS/exon structure, orphan features, etc).
 ## Output is discarded (/dev/null) — only warnings and errors are reported.
 run_agat = yes
+
+## ============================================================
+[miniprot]
+##
+## Step 6 rebuilds each merged gene from protein evidence: the reference protein
+## the fragments tiled against (best_hit) is aligned across the merged locus with
+## miniprot (spliced protein-to-genome alignment). SUPPORTED (the alignment covers
+## >= min_prot_cov of the protein and every source fragment, with no frameshift and
+## no in-frame stop): the placeholder model is replaced by the miniprot model --
+## real splice sites, a missing exon at the break recovered; when miniprot's model
+## does not reach a start codon, the 5' fragment's own start completes it. NOT_SUPPORTED:
+## the placeholder is kept and step 8 fails the merge (NO_PROTEIN_SPAN).
+## Placeholder models are kept in merges.placeholder.gff; per-merge results in
+## miniprot.tsv. Requires miniprot and samtools, and a samtools faidx index of genome_fa.
+
+## run_miniprot: yes/no. Default: yes.
+run_miniprot = yes
+
+## flank: bp added on each side of the merged gene for the miniprot search. Default: 5000.
+flank = 5000
+
+## min_prot_cov: minimum fraction of the reference protein the alignment must cover.
+## Default: 0.80.
+min_prot_cov = 0.80
 
 ## ============================================================
 [paths]
@@ -481,6 +434,6 @@ bedtools_bin   =
 gt_bin         =
 agat_bin       =
 gffread_bin    =
-mafft_bin      =
-kalign_bin     =
+miniprot_bin   =
+samtools_bin   =
 perl_bin       =

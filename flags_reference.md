@@ -44,39 +44,41 @@ of `isoseq_validated.txt`). Controlled by `require_isoseq` and
 
 ## Step 8 flags — translation validation  (`report.tsv`)
 
-Assigned by `validate_merge_translation.pl`. Written into `report.tsv` and into
-GFF attributes (`transl_result`, `msa_flag`, `min_junction_score`) on retained
-merged genes in the final `validated.gff`.
+Assigned by `validate_merge_translation.pl`. Written into `report.tsv` and into the
+`transl_result` GFF attribute on retained merged genes in the final `validated.gff`.
 
-### `translation_flag` (column 17)
+### `miniprot` (column 13) — from the step 6 rebuild
+
+| Value | Meaning |
+|-------|---------|
+| `SUPPORTED` | The tiling reference protein aligns across the whole merged locus as one gene (≥ `min_prot_cov` of the protein, every source fragment, no frameshift, no in-frame stop); the model was rebuilt from that alignment |
+| `NOT_SUPPORTED:<reason>` | It does not: `covers_N_of_M_sources`, `frameshift`, `inframe_stop`, `protein_cov_X`, `no_alignment`, `no_reference_protein` |
+| `not_run` | `run_miniprot = no` |
+
+Rebuilt genes also carry `start_codon=present|from_fragment:<gene>|incomplete` and
+`stop_codon=present|absent`.
+
+### `translation_flag` (column 14)
 
 | Value | Meaning | Notes |
 |-------|---------|-------|
 | `OK` | No internal stop codons in the merged CDS translation | — |
-| `FRAMESHIFT_DETECTED` | Internal stop codon(s) found — see `internal_stop_pos` | Stops within 10 aa of the N or C terminus are not flagged (partial CDS tolerance) |
+| `FRAMESHIFT_DETECTED` | Internal stop codon(s) found — see `internal_stop_pos` | — |
 
-### `msa_flag` (column 16)
-
-| Value | Meaning | Notes |
-|-------|---------|-------|
-| `GOOD_MSA` | Min junction MSA score ≥ `min_junction_score`; clean translation | — |
-| `GOOD_MSA_LOW_REF` | Same as `GOOD_MSA` but fewer than `min_msa_refs` reference sequences were available — score is less reliable | Passes the same thresholds; use as a confidence indicator |
-| `WEAK_JUNCTION` | Min junction score below `min_junction_score`, or aligner failed | — |
-| `NO_HIT` | No diamond hit found for the merged protein | Treated as REVIEW, not FAIL |
-| `SKIPPED` | MSA scoring was skipped (`no_msa = yes` in config) | — |
-
-### `overall_result` (column 20)
+### `overall_result` (column 17)
 
 | Value | Meaning | Controlled by |
 |-------|---------|---------------|
-| `PASS` | Clean translation, coverage thresholds met, junction MSA score above threshold | — |
-| `FAIL` | At least one hard fail criterion met; source genes are restored in `validated.gff` | — |
-| `REVIEW` | No hard fail, but PASS criteria not fully met — inspect before use | `final_gff_include_review` controls whether REVIEW merges are kept in `validated.gff` |
+| `PASS` | No fail reason; merged protein covers ≥ `min_merged_cov` of its best reference and the reference ≥ `min_ref_cov` of it | — |
+| `FAIL` | At least one fail reason; source genes are restored in `validated.gff` | — |
+| `REVIEW` | No fail reason, but the merged protein covers < `min_ref_cov` of its reference | `final_gff_include_review` controls whether REVIEW merges are kept in `validated.gff` |
 
-### `fail_reasons` (column 19)
+### `fail_reasons` (column 16)
 
 | Value | Meaning |
 |-------|---------|
 | `INTERNAL_STOP` | Merged CDS has an internal stop codon |
+| `FRAME_BREAK` | A fragment junction leaves the downstream fragment out of frame (`frame_break` attribute from step 6) |
+| `NO_PROTEIN_SPAN` | miniprot NOT_SUPPORTED: the reference protein does not span the merge as one gene |
 | `LOW_MERGED_COV` | Merged protein covers less than `min_merged_cov` of its best reference hit |
 | `NO_HIT` | No reference hit found for the merged protein |

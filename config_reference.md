@@ -24,7 +24,7 @@ section. Copy `mender.cfg.example` to a project-specific name before editing.
 | `run_prefix` | Short identifier for this run — used to name all output files | — | Typically a date or version string; no slashes or spaces |
 | `results_dir` | Directory for final per-run output files | `results` | Created automatically if absent |
 | `workdir` | Directory for intermediate scratch files (steps 1–7) | `mender_workdir` | Safe to delete between runs |
-| `db_dir` | Directory for shared diamond databases (subject and SwissProt) | `mender_db` | Reused across runs; not deleted between runs |
+| `db_dir` | Directory for shared diamond databases (the subject proteome) | `mender_db` | Reused across runs; not deleted between runs |
 
 ---
 
@@ -75,21 +75,22 @@ section. Copy `mender.cfg.example` to a project-specific name before editing.
 |-----|-----------------|---------|-------|
 | `run_gt` | Run `gt gff3validator` on merged GFF (step 7, fast) | `yes` | yes / no. Checks strict GFF3 spec compliance; non-fatal |
 | `run_translation_validation` | Run `validate_merge_translation.pl` (step 8) | `yes` | yes / no. Skip when `genome_fa` is unavailable or for a quick run |
-| `min_junction_score` | Per-junction MSA score below which `msa_flag` is WEAK_JUNCTION | `0.5` | Informational only (2026-09-28): in a negative control of 100 deliberately false merges every one scored GOOD_MSA (0.59–1.00), the same range as real merges, so the score no longer decides PASS/FAIL. The alignments remain useful to inspect (`keep_msa = yes`) |
-| `min_merged_cov` | Minimum fraction of merged protein covered by best reference hit | `0.80` | The check that separates true from false merges (Congeria negative control: 0.80 kept 89/93 real merges, 12/100 deliberately false ones). The MSA junction score is reported but no longer decides PASS/FAIL |
-| `min_ref_cov` | Minimum fraction of best reference protein covered by merged protein | `0.50` | — |
-| `no_msa` | Skip MSA entirely; report translation + diamond only | `no` | yes / no. Faster but loses junction scoring |
-| `aligner` | MSA tool and strategy for junction scoring | `mafft_fast` | Options: `mafft_fast` (FFT-NS-2, fastest), `mafft_auto` (best strategy for input size), `kalign3` (5–10× faster than mafft_auto; recommended for large runs) |
-| `w_conservation` | Weight for the conservation sub-score in junction scoring | `0.3` | Fraction of positions in ±5 aa window where merged and reference agree on majority residue. Weights must sum to 1.0 |
-| `w_continuity` | Weight for the reference continuity sub-score | `0.3` | Fraction of reference sequences that are gap-free across the ±5 aa junction window |
-| `w_gap` | Weight for the gap-pattern sub-score | `0.4` | Fraction of window columns where the merged protein does not introduce a gap vs references |
-| `min_msa_refs` | Minimum number of reference sequences in the MSA for the junction score to be considered fully reliable | `2` | When fewer refs are available, merge is scored but flagged `GOOD_MSA_LOW_REF`. Set to 1 to suppress these warnings |
-| `max_msa_refs` | Maximum number of reference sequences to include in each MSA | `3` | Diamond is run with `--max-target-seqs 5`; values above 5 have no effect unless diamond search depth is also increased |
-| `keep_msa` | Write per-merge alignment files to `<results_prefix>_msa/` | `no` | yes / no. Useful for inspecting individual junction alignments; disk-intensive on large runs |
-| `swissprot_fa` | Path to UniProt/SwissProt FASTA for MSA reference sequences | _(blank)_ | Falls back to `subject_fa` hits if blank or file not found |
-| `swissprot_db` | Override path for pre-built SwissProt diamond database | _(blank)_ | Normally derived as `<db_dir>/swissprot.dmnd`; only set if using a DB outside `db_dir` |
-| `final_gff_include_review` | Include REVIEW merges in the final `validated.gff` | `yes` | yes / no. `yes` keeps REVIEW merges (recommended when IsoSeq is available); `no` replaces them with source genes |
+| `min_merged_cov` | Minimum fraction of merged protein covered by best reference hit | `0.80` | The check that separates true from false merges (Congeria negative control: 0.80 kept 89/93 real merges, 12/100 deliberately false ones) |
+| `min_ref_cov` | Minimum fraction of best reference protein covered by merged protein | `0.50` | Below it the merge is REVIEW |
+
+The MSA junction scoring keys (`min_junction_score`, `no_msa`, `aligner`, `w_conservation`, `w_continuity`, `w_gap`, `min_msa_refs`, `max_msa_refs`, `keep_msa`, `swissprot_fa`, `swissprot_db`, and `mafft_bin`/`kalign_bin` in `[paths]`) were removed on 2026-09-28: in a negative control of 100 deliberately false merges every one scored GOOD_MSA (junction scores 0.59–1.00, the same range as real merges). They are ignored with a warning.
+| `final_gff_include_review` | Include REVIEW merges in the final `validated.gff` | `yes` | yes / no. `yes` keeps REVIEW merges; `no` replaces them with source genes |
 | `run_agat` | Run `agat_convert_sp_gxf2gxf.pl` gene-model check on PASS GFF (step 9, slow) | `yes` | yes / no. Checks CDS/exon structure, orphan features, parent–child coherence |
+
+---
+
+## `[miniprot]`
+
+| Key | What it controls | Default | Notes |
+|-----|-----------------|---------|-------|
+| `run_miniprot` | Rebuild each merged gene with miniprot in step 6 | `yes` | The merge's tiling reference protein is aligned across the merged locus. SUPPORTED: the placeholder model is replaced (real splice sites, missing exon recovered, start codon completed from the 5' fragment when needed). NOT_SUPPORTED: step 8 fails the merge (`NO_PROTEIN_SPAN`). Congeria negative control: 100/100 false merges NOT_SUPPORTED |
+| `flank` | bp added on each side of the merged gene for the miniprot search | `5000` | — |
+| `min_prot_cov` | Minimum fraction of the reference protein the alignment must cover | `0.80` | Also required: no frameshift, no in-frame stop, CDS over every source gene |
 
 ---
 
@@ -103,6 +104,6 @@ section. Copy `mender.cfg.example` to a project-specific name before editing.
 | `gt_bin` | Path to `gt` (GenomeTools) executable | _(blank = `$PATH`)_ | — |
 | `agat_bin` | Path to `agat_convert_sp_gxf2gxf.pl` | _(blank = `$PATH`)_ | Include the script name in the path |
 | `gffread_bin` | Path to `gffread` executable | _(blank = `$PATH`)_ | — |
-| `mafft_bin` | Path to `mafft` executable | _(blank = `$PATH`)_ | — |
-| `kalign_bin` | Path to `kalign` executable | _(blank = `$PATH`)_ | Only needed when `aligner = kalign3` |
+| `miniprot_bin` | Path to `miniprot` executable | _(blank = `$PATH`)_ | Needed when `run_miniprot = yes` |
+| `samtools_bin` | Path to `samtools` executable | _(blank = `$PATH`)_ | Needed when `run_miniprot = yes` (region extraction) |
 | `perl_bin` | Path to `perl` executable | _(blank = `$PATH`)_ | — |

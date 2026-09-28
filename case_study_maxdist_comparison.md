@@ -1,5 +1,9 @@
 # Case Study: `max_dist` and `spanning_rescue` in the CCA3 Annotation
 
+> **Note (2026-09-28):** this case study predates the removal of the MSA junction scoring from step 8
+> and the miniprot rebuild of merged genes; references to `msa_flag`, junction scores or MAFFT describe
+> the pipeline as it was then. See README, "Rebuilding merged genes with miniprot".
+
 ## Overview
 
 Four Mender runs on the *Chamaeleo calyptratus* CCA3 annotation were compared

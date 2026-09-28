@@ -1,5 +1,9 @@
 # Case Study: Choosing a Reference Proteome for Mender
 
+> **Note (2026-09-28):** this case study predates the removal of the MSA junction scoring from step 8
+> and the miniprot rebuild of merged genes; references to `msa_flag`, junction scores or MAFFT describe
+> the pipeline as it was then. See README, "Rebuilding merged genes with miniprot".
+
 ## Runs compared
 
 | Config | Reference | Run prefix |
