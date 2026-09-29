@@ -491,7 +491,7 @@ print "=" x 60, "\n";
     # gt: only if run_gt = yes (step 7)
     push @checks, [$gt_bin,       "gt",       $run_gt  !~ /^no$/i];
 
-    # gffread: needed for translation validation (step 8) or FASTA export (step 10)
+    # gffread: needed for translation validation (step 8) or gene set export (step 10)
     push @checks, [$gffread_bin,  "gffread",  $run_transl_val !~ /^no$/i || $run_steps{10}];
 
     # miniprot + samtools: the rebuild of merged genes in step 6 (run_miniprot = yes)
@@ -1058,11 +1058,11 @@ if ($run_steps{9}) {
 }
 
 # ---------------------------------------------------------------------------
-# STEP 10: EXPORT FASTA FILES FROM FINAL VALIDATED GFF
+# STEP 10: EXPORT THE GENE SET (datastore layout) FROM THE FINAL VALIDATED GFF
 # ---------------------------------------------------------------------------
 if ($run_steps{10}) {
     print "\n", "=" x 60, "\n";
-    print "STEP 10: EXPORT PROTEIN / CDS / TRANSCRIPT FASTAs\n";
+    print "STEP 10: EXPORT THE GENE SET (GFF, GTF, FASTAs, id maps)\n";
     print "=" x 60, "\n";
 
     check_file($genome_fa, "genome_fa");
@@ -1079,28 +1079,15 @@ if ($run_steps{10}) {
 
     check_file($fasta_src_gff, "GFF for FASTA export");
 
-    my $proteins_fa   = "$run_dir/validated.proteins.fa";
-    my $cds_fa        = "$run_dir/validated.cds.fa";
-    my $transcripts_fa = "$run_dir/validated.mrna.fa";
-
+    # the gene set, laid out for the genome datastore (genes.gff, genes.gtf, protein.aa.fa,
+    # cds.nt.fa, transcript.nt.fa, protein2gene.txt, cds2gene.txt, transcript2gene.txt);
+    # descriptions: the input proteome's for untouched genes, merge provenance for Mender genes
+    my $geneset_dir = "$run_dir/geneset";
     run_cmd(
-        "$gffread_bin $fasta_src_gff -g $genome_fa " .
-        "-y $proteins_fa " .
-        "-x $cds_fa " .
-        "-w $transcripts_fa",
-        "Export protein / CDS / transcript FASTAs via gffread"
+        "$perl_bin $scripts_dir/export_geneset.pl --gff $fasta_src_gff --genome_fa $genome_fa " .
+        "--proteome_fa $proteome_fa --out_dir $geneset_dir --gffread_bin $gffread_bin",
+        "Export the gene set (GFF, GTF, FASTAs, id-to-gene maps) for the datastore"
     );
-
-    unless ($dry_run) {
-        for my $f ($proteins_fa, $cds_fa, $transcripts_fa) {
-            if (-f $f) {
-                my $n = `grep -c '^>' $f 2>/dev/null` + 0;
-                printf "  %-46s  %d sequences\n", $f, $n;
-            } else {
-                print "  WARNING: expected output not found: $f\n";
-            }
-        }
-    }
 }
 
 # ---------------------------------------------------------------------------
@@ -1256,9 +1243,12 @@ if ($run_steps{10}) {
         ["$tv_out/miniprot.tsv",        "miniprot rebuild: per merge, SUPPORTED / NOT_SUPPORTED and why"],
         ["$tv_out/merges.placeholder.gff", "merged models before the miniprot rebuild"],
         ["$tv_out/pass_proteins.fa",       "translated proteins for PASS merges (step 8)"],
-        ["$tv_out/validated.proteins.fa", "protein sequences for final validated GFF (step 10)"],
-        ["$tv_out/validated.cds.fa",      "CDS sequences for final validated GFF (step 10)"],
-        ["$tv_out/validated.mrna.fa",     "transcript sequences for final validated GFF (step 10)"],
+        ["$tv_out/geneset/genes.gff",        "gene set for the datastore: annotation (step 10)"],
+        ["$tv_out/geneset/genes.gtf",        "gene set: annotation as GTF (step 10)"],
+        ["$tv_out/geneset/protein.aa.fa",    "gene set: proteins (step 10)"],
+        ["$tv_out/geneset/cds.nt.fa",        "gene set: CDS (step 10)"],
+        ["$tv_out/geneset/transcript.nt.fa", "gene set: transcripts, UTRs included (step 10)"],
+        ["$tv_out/geneset/protein2gene.txt", "gene set: protein id -> gene id (also cds2gene.txt, transcript2gene.txt)"],
         ["$run_workdir/merge_candidates.txt", "merge candidates from step 4"],
         ["$run_workdir/isoseq_validated.txt", "IsoSeq-validated merge table (step 5)"],
     );

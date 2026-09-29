@@ -76,7 +76,7 @@ there. Do not edit it directly; copy it to a project-specific name first.
 | `perl` | Run all scripts | yes |
 | `diamond` | blastp of query proteome vs reference | yes |
 | `bedtools` | IsoSeq read–gene overlap | only if `isoseq_gff` is set |
-| `gffread` | Translate merged CDS (step 8); export protein/CDS/transcript FASTAs (step 10) | required for steps 8 and 10; skip both to avoid this dependency |
+| `gffread` | Translate merged CDS (step 8); export the gene set: GTF and protein/CDS/transcript FASTAs (step 10) | required for steps 8 and 10; skip both to avoid this dependency |
 | `miniprot` | Rebuild merged genes from the tiling reference protein (step 6) | when `run_miniprot = yes` (default) |
 | `samtools` | Extract the merged locus for miniprot (`samtools faidx`; `genome_fa` needs a `.fai` index) | when `run_miniprot = yes` |
 | `gt` (GenomeTools) | GFF3 spec validation of merged genes (Step 7) | optional |
@@ -530,9 +530,14 @@ When run via `run_mender.pl`, the merge outputs land in `results/<prefix>/`:
 - `merges.gff` — complete merged annotation
 - `removed.gff` — source genes removed
 - `validated.gff` — **recommended for downstream use**; FAIL merges (and optionally REVIEW) replaced with their original source genes; retained Mender genes carry the `transl_result` GFF attribute (added by step 8)
-- `validated.proteins.fa` — protein sequences from the final validated GFF (step 10)
-- `validated.cds.fa` — CDS sequences from the final validated GFF (step 10)
-- `validated.mrna.fa` — transcript sequences from the final validated GFF (step 10)
+- `geneset/` — the final annotation as a gene set, laid out for the genome datastore (step 10,
+  `export_geneset.pl`): `genes.gff` (= `validated.gff`), `genes.gtf`, `protein.aa.fa`,
+  `cds.nt.fa`, `transcript.nt.fa` (UTRs included; `CDS=start-end` in the header),
+  `protein2gene.txt`, `cds2gene.txt`, `transcript2gene.txt` (sequence id, tab, gene id; each lists
+  exactly the ids of its FASTA). Sequence ids are transcript ids. FASTA descriptions: genes Mender
+  did not touch keep their description from `proteome_fa`; Mender genes get `merge_id=`,
+  `merged_from=`, `model=miniprot|placeholder`, `rebuild_ref=`, `start_codon=`, `stop_codon=`,
+  `utr5=`, `utr3=`. `metadata.yaml` and `DB/` are left to the datastore.
 - `run_report.txt` — full run report: all parameters, step status, result counts, output file inventory
 
 ### `split_gene_report_checks.sh`
@@ -750,7 +755,7 @@ codon is at the same genome position as the 5' fragment's CDS start, that fragme
 back; the same at the 3' end with the 3' fragment's stop codon and 3' UTR. A UTR is never moved
 to a start or stop that differs, where it would overlap the new CDS or no longer touch it.
 Recorded as `utr5=` / `utr3=` `from_fragment:<transcript> | none`, with `five_prime_UTR` /
-`three_prime_UTR` features; `validated.mrna.fa` (step 10) then includes the UTRs.
+`three_prime_UTR` features; `geneset/transcript.nt.fa` (step 10) then includes the UTRs.
 
 Which source transcript: for each end, the end fragment's transcripts are tried longest CDS
 first, and the first one that fits is used (for completion: the rebuilt start/stop falls in
