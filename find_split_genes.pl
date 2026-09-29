@@ -71,9 +71,14 @@ use Getopt::Long qw(GetOptions);
 ##   into multi-gene groups (e.g. A-B + B-C becomes A,B,C in one row).
 ##   Chains are trimmed and split based on junction tiling hit asymmetry
 ##   before writing — see CHAIN TRIMMING AND SPLITTING below.
-##   The best_hit is chosen as the reference protein with the most chain genes
-##   having valid entries against it, breaking ties by combined coverage span,
-##   with preference for hits that have a real description over bare Ensembl IDs.
+##   The reference proteins hitting two or more chain genes are ranked: most chain
+##   genes first, then identity-weighted coverage (the fraction of the reference's
+##   residues the fragments align identically: sum(pident x aligned span) / length,
+##   so a close reference beats a distant one at the same coverage), then a real
+##   description over a bare ID, then the id. The top one is best_hit; the ranked
+##   list is ref_candidates, which the miniprot rebuild tries in order.
+##   The merge evidence (best_combined_cov_pct, LOW_COV, junction overhang) is
+##   measured on each pair's highest-coverage shared reference, as before.
 ##   Columns:
 ##     merge_id              : unique identifier
 ##     num_genes             : how many genes to merge
@@ -83,7 +88,8 @@ use Getopt::Long qw(GetOptions);
 ##     gene_descs            : comma-sep descriptions in genomic order
 ##     best_hit              : reference protein best representing the whole chain
 ##     hit_desc              : description of best_hit
-##     best_combined_cov_pct : combined coverage of best_hit by the best pair
+##     best_combined_cov_pct : highest combined coverage of any shared reference
+##                             by the best pair (the reference may differ from best_hit)
 ##     best_gap              : tiling gap for the best pair
 ##     evalues               : comma-sep evalues in genomic order vs best_hit
 ##                             '?' means that gene has no hit vs best_hit
@@ -104,6 +110,9 @@ use Getopt::Long qw(GetOptions);
 ##     num_pairs_in_chain    : number of pairwise tiling relationships in chain
 ##     flag                  : quality flag(s), comma-sep if multiple apply
 ##                             see FLAG DEFINITIONS below
+##     best_hit_id_cov       : identity-weighted coverage of best_hit by the chain
+##     ref_candidates        : comma-sep reference proteins, ranked (best_hit first,
+##                             at most 10); the miniprot rebuild tries them in order
 ##
 ## =============================================================================
 ## KEY CONCEPTS
@@ -524,6 +533,7 @@ my $strong_thresh  =  3;  # min junction hits for STRONG flag
 my $frag_scov_max  = 85;  # scovhsp <= this is always a fragment candidate
 my $frag_qcov_min  = 90;  # qcovhsp >= this enables the soft scovhsp extension
 my $frag_scov_soft = 90;  # with qcovhsp >= frag_qcov_min, keep if scovhsp < this
+my $max_ref_candidates = 10;  # ranked reference proteins written per merge (ref_candidates)
 
 # ---------------------------------------------------------------------------
 # Load reference protein descriptions from subject fasta headers
@@ -538,7 +548,9 @@ while (my $line = <FA>){
     my ($symbol) = $line =~ /gene_symbol:(\S+)/;
     my ($d)      = $line =~ /description:(.+?)(?:\s+\[|$)/;
     my ($gene)   = $line =~ /\bgene:(ENS\S+)/;
-    my $joined   = join(" | ", grep { defined $_ } $symbol, $d);
+    my @parts;
+    for my $part ($symbol, $d) { push @parts, $part if defined $part }
+    my $joined   = join(" | ", @parts);
     $desc{$id}   = $joined ne "" ? $joined : ($gene // "");
 }
 close FA;
@@ -597,13 +609,35 @@ while (my $line = <GFF>){
 }
 close GFF;
 
+# ---------------------------------------------------------------------------
+# Comparators for sort, named so the code never reads sort's package variables: with the
+# ($$) prototype, sort passes the two elements in @_
+# ---------------------------------------------------------------------------
+# genes by chromosome, start, the longer gene first (it is the parent), id
+sub by_genome_position($$) {
+    my ($left, $right) = @_;
+    return $locs{$left}{ref}   cmp $locs{$right}{ref}
+        || $locs{$left}{start} <=> $locs{$right}{start}
+        || $locs{$right}{end}  <=> $locs{$left}{end}
+        || $left cmp $right;
+}
+# genes of one chromosome by start, then id
+sub by_start_then_id($$) {
+    my ($left, $right) = @_;
+    return $locs{$left}{start} <=> $locs{$right}{start} || $left cmp $right;
+}
+sub by_number_ascending($$)  { my ($left, $right) = @_; return $left <=> $right }
+sub by_number_descending($$) { my ($left, $right) = @_; return $right <=> $left }
+sub by_pct_descending($$)    { my ($left, $right) = @_; return $right->{pct} <=> $left->{pct} }
+sub by_best_pct_descending($$)   { my ($left, $right) = @_; return $right->{best_pct} <=> $left->{best_pct} }
+sub by_num_tiling_descending($$) { my ($left, $right) = @_; return $right->{num_tiling} <=> $left->{num_tiling} }
+
+# the first element of a sorted copy (sort in list context, then take [0])
+sub first_sorted_desc { my @sorted = sort by_number_descending @_; return $sorted[0] }
+sub first_sorted_asc  { my @sorted = sort by_number_ascending @_;  return $sorted[0] }
+
 # Sort all genes by chromosome then start position
-my @by_start = sort {
-    $locs{$a}{ref}   cmp $locs{$b}{ref} ||
-    $locs{$a}{start} <=> $locs{$b}{start} ||
-    $locs{$b}{end}   <=> $locs{$a}{end}   ||   # the longer gene first: it is the parent
-    $a cmp $b
-} keys %locs;
+my @by_start = sort by_genome_position keys %locs;
 
 # ---------------------------------------------------------------------------
 # Identify nested genes: genes whose coordinates fall entirely within another
@@ -629,7 +663,8 @@ for my $gene (@by_start) {
 }
 
 # Build rank array and rank lookup excluding nested genes
-my @all_sorted = grep { !exists $nested{$_} } @by_start;
+my @all_sorted;
+for my $gene (@by_start) { push @all_sorted, $gene unless exists $nested{$gene} }
 my %rank;
 for my $i (0 .. $#all_sorted) {
     $rank{ $all_sorted[$i] } = $i;
@@ -710,6 +745,7 @@ while (my $line = <BLAST>){
             $subjects{$subject}{$gene_id}{qstart} = $qstart;
             $subjects{$subject}{$gene_id}{qend}   = $qend;
             $subjects{$subject}{$gene_id}{qlen}   = $qlen;
+            $subjects{$subject}{$gene_id}{pident} = $per_identity;
         }
         $gene_hits{$gene_id}{$subject} = 1;
     }
@@ -781,7 +817,9 @@ for my $i (0 .. $#all_sorted - 1) {
             ? ($gene_hits{$g1}, $gene_hits{$g2})
             : ($gene_hits{$g2}, $gene_hits{$g1});
 
-        my @shared = sort grep { exists $big->{$_} } keys %$small;   # sorted: ties never depend on hash order
+        my @shared;
+        for my $hit (keys %$small) { push @shared, $hit if exists $big->{$hit} }
+        @shared = sort @shared;   # sorted: ties never depend on hash order
         next unless @shared;
 
         my $best_hit      = undef;
@@ -893,7 +931,7 @@ for my $i (0 .. $#all_sorted - 1) {
         ), "\n";
 
         # Detail: all tiling hits sorted by combined coverage descending
-        for my $th (sort { $b->{pct} <=> $a->{pct} } @tiling_hits) {
+        for my $th (sort by_pct_descending @tiling_hits) {
             print DETAIL join("\t",
                 $g1, $g2,
                 $gdist,
@@ -940,9 +978,10 @@ my @chains;
 for my $pair (@all_pairs) {
     my ($g1, $g2) = ($pair->{g1}, $pair->{g2});
 
-    my @matching_idx = grep {
-        $chains[$_]{genes}{$g1} || $chains[$_]{genes}{$g2}
-    } 0 .. $#chains;
+    my @matching_idx;
+    for my $idx (0 .. $#chains) {
+        push @matching_idx, $idx if $chains[$idx]{genes}{$g1} || $chains[$idx]{genes}{$g2};
+    }
 
     if (!@matching_idx) {
         push @chains, {
@@ -983,6 +1022,13 @@ sub get_junction_hits {
 # Helper: given an ordered gene list, get junction genomic distances
 # Returns array of distances (undef if pair not found)
 # ---------------------------------------------------------------------------
+# the values with undef shown as "?"
+sub unknown_as_question {
+    my @shown;
+    for my $value (@_) { push @shown, $value // "?" }
+    return @shown;
+}
+
 sub get_junction_dists {
     my @genes = @_;
     my @dists;
@@ -1039,7 +1085,9 @@ sub refine_chain {
     while ($trimmed && @genes > 2) {
         $trimmed = 0;
         my @hits = get_junction_hits(@genes);
-        my $max_hits = (sort { $b <=> $a } grep { defined $_ } @hits)[0] // 0;
+        my @known_hits;
+        for my $hit_count (@hits) { push @known_hits, $hit_count if defined $hit_count }
+        my $max_hits = first_sorted_desc(@known_hits) // 0;
 
         # check first junction
         if (defined $hits[0] && $hits[0] == 1 && $max_hits >= $asym_threshold) {
@@ -1089,15 +1137,48 @@ sub refine_chain {
     push @pieces, [@genes[$start .. $#genes]];
 
     # discard any pieces with fewer than 2 genes
-    return grep { scalar @$_ >= 2 } @pieces;
+    my @kept;
+    for my $piece (@pieces) { push @kept, $piece if @$piece >= 2 }
+    return @kept;
 }
 
 # ---------------------------------------------------------------------------
-# Helper: select best_hit for a chain — reference protein with most chain
-# genes covered, preferring hits with real descriptions over bare Ensembl IDs,
-# breaking ties by combined span
+# Helper: rank the reference proteins of a chain. The top one is the chain's
+# best_hit; the ranked list (ref_candidates) is what rebuild_with_miniprot.pl
+# tries, in order, to rebuild the merged gene.
+#   1. most chain genes hit (the evidence that joins them)
+#   2. identity-weighted coverage: the fraction of the reference's residues
+#      aligned identically by the chain's fragments, sum(pident * aligned span)
+#      / reference length. A close reference scores higher than a distant one
+#      at the same coverage; a distant reference makes spurious frameshifts and
+#      misplaced splice sites when aligned to the genome.
+#   3. a described hit (readability), then the reference id (deterministic)
+# Only references hitting two or more chain genes are candidates.
 # ---------------------------------------------------------------------------
-sub select_chain_best_hit {
+sub identity_weighted_cov {
+    my ($hit, @genes) = @_;
+    my $slen = $subject_len{$hit} or return 0;
+    my $identical = 0;
+    for my $gene (@genes) {
+        my $hsp = $subjects{$hit}{$gene} or next;
+        my $pident = $hsp->{pident};
+        $pident = 0 unless defined $pident && $pident ne "";
+        $identical += $pident / 100 * ($hsp->{send} - $hsp->{sstart} + 1);
+    }
+    my $frac = $identical / $slen;
+    return $frac > 1 ? 1 : $frac;
+}
+
+# a named comparator: sort passes the two elements in @_ (the ($$) prototype)
+sub by_reference_rank($$) {
+    my ($left, $right) = @_;
+    return $right->{n} <=> $left->{n}
+        || $right->{id_cov} <=> $left->{id_cov}
+        || $right->{has_desc} <=> $left->{has_desc}
+        || $left->{hit} cmp $right->{hit};
+}
+
+sub rank_chain_references {
     my ($ordered_ref) = @_;
     my @ordered = @$ordered_ref;
 
@@ -1108,31 +1189,19 @@ sub select_chain_best_hit {
         }
     }
 
-    my $best_hit      = undef;
-    my $best_n        = 0;
-    my $best_span     = 0;
-    my $best_has_desc = 0;
-
-    # most chain genes first (the evidence), then a described hit (readability),
-    # then the longest span; sorted candidates, so remaining ties go to the lower id
-    for my $hit (sort keys %candidate_hits) {
-        my @with_hit = grep { exists $subjects{$hit}{$_} } @ordered;
-        my $n = scalar @with_hit;
-        next unless $n > 1;
-
-        my $min_s = (sort { $a <=> $b } map { $subjects{$hit}{$_}{sstart} } @with_hit)[0];
-        my $max_e = (sort { $b <=> $a } map { $subjects{$hit}{$_}{send}   } @with_hit)[0];
-        my $span  = $max_e - $min_s + 1;
-        my $has_desc = ($desc{$hit} // "") =~ /[\s\|]/ ? 1 : 0;
-
-        if (!defined $best_hit
-            || $n > $best_n
-            || ($n == $best_n && $has_desc > $best_has_desc)
-            || ($n == $best_n && $has_desc == $best_has_desc && $span > $best_span)) {
-            $best_hit = $hit; $best_n = $n; $best_span = $span; $best_has_desc = $has_desc;
+    my @ranked;
+    for my $hit (keys %candidate_hits) {
+        my @with_hit;
+        for my $gene (@ordered) {
+            push @with_hit, $gene if exists $subjects{$hit}{$gene};
         }
+        next unless @with_hit > 1;
+        my $has_desc = ($desc{$hit} // "") =~ /[\s\|]/ ? 1 : 0;
+        push @ranked, { hit => $hit, n => scalar @with_hit, has_desc => $has_desc,
+                        id_cov => identity_weighted_cov($hit, @with_hit) };
     }
-    return $best_hit;
+    @ranked = sort by_reference_rank @ranked;
+    return @ranked;
 }
 
 # ---------------------------------------------------------------------------
@@ -1147,8 +1216,10 @@ sub compute_flags {
     # Calculated from the outermost coordinates of all genes in the chain.
     # A large span is biologically plausible for some gene families but should be
     # reviewed — very large spans combined with weak evidence are high-risk merges.
-    my $chain_start = (sort { $a <=> $b } map { $locs{$_}{start} } @ordered)[0];
-    my $chain_end   = (sort { $b <=> $a } map { $locs{$_}{end}   } @ordered)[0];
+    my (@starts, @ends);
+    for my $gene (@ordered) { push @starts, $locs{$gene}{start}; push @ends, $locs{$gene}{end} }
+    my $chain_start = first_sorted_asc(@starts);
+    my $chain_end   = first_sorted_desc(@ends);
     my $chain_span  = $chain_end - $chain_start + 1;
     if    ($chain_span > $large_span_extreme) { push @flags, "LARGE_SPAN_EXTREME" }
     elsif ($chain_span > $large_span_warn)    { push @flags, "LARGE_SPAN"         }
@@ -1164,7 +1235,8 @@ sub compute_flags {
     my @skipped = get_skipped_genes(@ordered);
     if (@skipped) {
         my $chain_strand = $locs{$ordered[0]}{strand};
-        my $any_same     = grep { ($locs{$_}{strand} // "") eq $chain_strand } @skipped;
+        my $any_same     = 0;
+        for my $gene (@skipped) { $any_same++ if ($locs{$gene}{strand} // "") eq $chain_strand }
         push @flags, ($any_same ? "SKIPPED_GENE" : "OPPOSITE_STRAND_SKIP");
     }
 
@@ -1172,14 +1244,16 @@ sub compute_flags {
     # The merge script builds transcripts by cross-product (N*M combinations).
     # Not all cross-product transcripts are necessarily biologically real —
     # they require transcript-level evidence (IsoSeq isoform data) to validate.
-    push @flags, "MULTI_ISOFORM_JOIN"
-        if grep { ($gene_n_transcripts{$_} // 1) > 1 } @ordered;
+    my $multi_isoform = 0;
+    for my $gene (@ordered) { $multi_isoform++ if ($gene_n_transcripts{$gene} // 1) > 1 }
+    push @flags, "MULTI_ISOFORM_JOIN" if $multi_isoform;
 
     # JUNCTION_OVERHANG: at some junction a piece extends more than end_tol aa past
     # its best alignment on the junction side -- sequence the reference lacks there
     # (a mispredicted exon at the break, or two different proteins)
-    push @flags, "JUNCTION_OVERHANG"
-        if grep { ($pair_overhang{"$ordered[$_]\t$ordered[$_+1]"} // 0) > $end_tol } 0 .. $#ordered - 1;
+    my $overhanging = 0;
+    for my $i (0 .. $#ordered - 1) { $overhanging++ if ($pair_overhang{"$ordered[$i]\t$ordered[$i+1]"} // 0) > $end_tol }
+    push @flags, "JUNCTION_OVERHANG" if $overhanging;
 
     # 2-gene pairs: only SINGLE_HIT possible beyond the above
     if (@ordered == 2) {
@@ -1190,7 +1264,11 @@ sub compute_flags {
 
     # 3+ gene chains
     my @hits    = get_junction_hits(@ordered);
-    my @numeric = grep { defined $_ } @hits;
+    my @numeric;
+    my $n_unknown = 0;
+    for my $hit_count (@hits) {
+        if (defined $hit_count) { push @numeric, $hit_count } else { $n_unknown++ }
+    }
 
     # TRANSITIVE_JOIN: one or more consecutive genes in this chain have no direct
     # pairwise tiling evidence between them (junction = "?" in junction_tiling_hits).
@@ -1198,14 +1276,14 @@ sub compute_flags {
     # to another gene via a different reference protein — not because they themselves
     # share a common reference where their alignments tile end-to-end.
     # See FLAG DEFINITIONS for full description and biological implications.
-    push @flags, "TRANSITIVE_JOIN" if grep { !defined $_ } @hits;
+    push @flags, "TRANSITIVE_JOIN" if $n_unknown;
 
     unless (@numeric) {
         return @flags ? join(",", @flags) : "";
     }
 
-    my $min_hits = (sort { $a <=> $b } @numeric)[0];
-    my $max_hits = (sort { $b <=> $a } @numeric)[0];
+    my $min_hits = first_sorted_asc(@numeric);
+    my $max_hits = first_sorted_desc(@numeric);
 
     if ($min_hits >= $strong_thresh) {
         push @flags, "STRONG";
@@ -1261,24 +1339,31 @@ print MERGE join("\t",
     "skipped_genes",
     "max_tiling_hits",
     "num_pairs_in_chain",
-    "flag"
+    "flag",
+    "best_hit_id_cov",
+    "ref_candidates"
 ), "\n";
 
 my $merge_id   = 1;
 my $n_trimmed  = 0;
 my $n_split    = 0;
 
-for my $chain (sort {
-    my $a_gene = (sort { $locs{$a}{start} <=> $locs{$b}{start} || $a cmp $b } keys %{$a->{genes}})[0];
-    my $b_gene = (sort { $locs{$a}{start} <=> $locs{$b}{start} || $a cmp $b } keys %{$b->{genes}})[0];
-    $locs{$a_gene}{ref} cmp $locs{$b_gene}{ref} ||
-    $locs{$a_gene}{start} <=> $locs{$b_gene}{start} ||
-    $a_gene cmp $b_gene
-} @chains) {
+# chains in genome order of their first gene
+for my $chain (@chains) {
+    my @genes = sort by_start_then_id keys %{ $chain->{genes} };
+    $chain->{first_gene} = $genes[0];
+}
+sub by_chain_position($$) {
+    my ($left, $right) = @_;
+    my ($left_gene, $right_gene) = ($left->{first_gene}, $right->{first_gene});
+    return $locs{$left_gene}{ref}   cmp $locs{$right_gene}{ref}
+        || $locs{$left_gene}{start} <=> $locs{$right_gene}{start}
+        || $left_gene cmp $right_gene;
+}
+for my $chain (sort by_chain_position @chains) {
 
     # genes in genomic order before refinement
-    my @raw_ordered = sort { $locs{$a}{start} <=> $locs{$b}{start} || $a cmp $b }
-                      keys %{ $chain->{genes} };
+    my @raw_ordered = sort by_start_then_id keys %{ $chain->{genes} };
 
     # apply trimming and splitting — may return multiple pieces
     my @pieces = refine_chain(@raw_ordered);
@@ -1289,48 +1374,56 @@ for my $chain (sort {
         my @ordered = @$piece;
         my $ref     = $locs{ $ordered[0] }{ref};
 
-        # select best hit for this piece
-        my $chain_best_hit = select_chain_best_hit(\@ordered);
+        # rank the reference proteins for this piece; the top one is its best hit
+        my @ranked_refs = rank_chain_references(\@ordered);
+        my $chain_best_hit = @ranked_refs ? $ranked_refs[0]{hit} : undef;
+        my $last_ref = $#ranked_refs < $max_ref_candidates - 1 ? $#ranked_refs : $max_ref_candidates - 1;
+        my @ranked_refs_out = @ranked_refs[0 .. $last_ref];
+        my @ranked_ids;
+        for my $ranked (@ranked_refs_out) { push @ranked_ids, $ranked->{hit} }
 
         # fall back to best pairwise hit if needed
         unless (defined $chain_best_hit) {
-            my $best_pair = (sort { $b->{best_pct} <=> $a->{best_pct} }
-                             @{ $chain->{pairs} })[0];
-            $chain_best_hit = $best_pair->{best_hit};
+            my @by_pct = sort by_best_pct_descending @{ $chain->{pairs} };
+            $chain_best_hit = $by_pct[0]{best_hit};
         }
 
         # find best pairwise hit within this piece for coverage/gap reporting
-        my @piece_pairs = grep {
-            my $g1 = $_->{g1}; my $g2 = $_->{g2};
-            grep { $_ eq $g1 } @ordered and grep { $_ eq $g2 } @ordered
-        } @{ $chain->{pairs} };
+        my %in_piece;
+        for my $gene (@ordered) { $in_piece{$gene} = 1 }
+        my @piece_pairs;
+        for my $pair (@{ $chain->{pairs} }) {
+            push @piece_pairs, $pair if $in_piece{ $pair->{g1} } && $in_piece{ $pair->{g2} };
+        }
 
-        my $best_pair = @piece_pairs
-            ? (sort { $b->{best_pct} <=> $a->{best_pct} } @piece_pairs)[0]
-            : (sort { $b->{best_pct} <=> $a->{best_pct} } @{ $chain->{pairs} })[0];
+        my @pairs_by_pct = sort by_best_pct_descending (@piece_pairs ? @piece_pairs : @{ $chain->{pairs} });
+        my $best_pair = $pairs_by_pct[0];
 
-        my $max_tiling = @piece_pairs
-            ? (sort { $b->{num_tiling} <=> $a->{num_tiling} } @piece_pairs)[0]{num_tiling}
-            : $best_pair->{num_tiling};
+        my $max_tiling = $best_pair->{num_tiling};
+        if (@piece_pairs) {
+            my @by_tiling = sort by_num_tiling_descending @piece_pairs;
+            $max_tiling = $by_tiling[0]{num_tiling};
+        }
 
         my $gene_list  = join(",", @ordered);
-        my $coord_list = join(",", map { $locs{$_}{coord}  } @ordered);
-        my $desc_list  = join(",", map { $desc{$_} // "?"  } @ordered);
-        my $eval_list  = join(",", map {
-            $subjects{$chain_best_hit}{$_}{evalue} // "?"
-        } @ordered);
+        my (@coords, @descs, @evals);
+        for my $gene (@ordered) {
+            push @coords, $locs{$gene}{coord};
+            push @descs,  $desc{$gene} // "?";
+            push @evals,  $subjects{$chain_best_hit}{$gene}{evalue} // "?";
+        }
+        my $coord_list = join(",", @coords);
+        my $desc_list  = join(",", @descs);
+        my $eval_list  = join(",", @evals);
 
         # junction tiling hits and genomic distances
         my @jhits    = get_junction_hits(@ordered);
         my @jdists   = get_junction_dists(@ordered);
         my $junc_str  = @ordered > 2
-            ? join("|", map { $_ // "?" } @jhits)
+            ? join("|", unknown_as_question(@jhits))
             : "NA";
-        #my $jdist_str = @ordered > 2
-        #    ? join("|", map { $_ // "?" } @jdists)
-        #    : "NA";
         my $jdist_str = @ordered > 1
-            ? join("|", map { $_ // "?" } @jdists)
+            ? join("|", unknown_as_question(@jdists))
             : "NA";
 
         # skipped genes — those sitting between non-adjacent junction pairs
@@ -1360,7 +1453,9 @@ for my $chain (sort {
             $skipped_str,
             $max_tiling,
             scalar @ordered - 1,
-            $flag
+            $flag,
+            ($ranked_refs_out[0] ? sprintf("%.3f", $ranked_refs_out[0]{id_cov}) : "?"),
+            (@ranked_refs_out ? join(",", @ranked_ids) : $chain_best_hit)
         ), "\n";
 
         $merge_id++;

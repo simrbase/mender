@@ -23,6 +23,8 @@ use FindBin;
 #   F5  20 genes inside a long gene are excluded from the rank (a 10-gene look-back missed them)
 #   F6  identical output under two Perl hash seeds (ties never depend on hash order)
 #   F7  a piece extending 40 aa past its alignment at the junction -> JUNCTION_OVERHANG
+#   F8  two references tile a pair equally; the closer one (95% vs 50% identity) is best_hit and
+#       ranked first in ref_candidates, although the distant one has the lower id
 
 my $dir = tempdir(CLEANUP => 1);
 my ($passed, $failed) = (0, 0);
@@ -43,6 +45,11 @@ my %CODON = (
 sub translate { my ($s) = @_; my $p = ''; for (my $i = 0; $i + 3 <= length $s; $i += 3) { $p .= $CODON{substr $s, $i, 3} // 'X' } return $p }
 sub revcomp { my ($s) = @_; ($s = reverse $s) =~ tr/ACGT/TGCA/; return $s }
 sub write_file { my ($path, $text) = @_; open my $fh, '>', $path or die "$path: $!"; print $fh $text; close $fh }
+# named comparators: sort passes the two elements in @_ (the ($$) prototype)
+sub by_number($$)         { my ($left, $right) = @_; return $left <=> $right }
+sub by_gff_start($$)      { my ($left, $right) = @_; return $left->[3] <=> $right->[3] }
+sub by_gff_end_desc($$)   { my ($left, $right) = @_; return $right->[4] <=> $left->[4] }
+sub lengths_of { my @lens; for my $piece (@_) { push @lens, length $piece } return @lens }
 
 # ---- a gene built from exons: returns (gene coordinates, GFF lines for gene/mRNA/exon/CDS)
 # $cds_pieces: coding sequence split into exon pieces (5'->3' in transcription order).
@@ -66,7 +73,7 @@ sub gff_block {
   my @lines = (join("\t", $chr, 'test', 'gene', $s, $e, '.', $strand, '.', "ID=$id"),
                join("\t", $chr, 'test', 'mRNA', $s, $e, '.', $strand, '.', "ID=$id-RA;Parent=$id"));
   for my $i (0 .. $#$exons) {
-    my ($es, $ee) = sort { $a <=> $b } @{$exons->[$i]};
+    my ($es, $ee) = sort by_number @{$exons->[$i]};
     push @lines, join("\t", $chr, 'test', 'exon', $es, $ee, '.', $strand, '.', "ID=$id-RA:e$i;Parent=$id-RA");
     push @lines, join("\t", $chr, 'test', 'CDS',  $es, $ee, '.', $strand, $phases->[$i], "ID=$id-RA:c$i;Parent=$id-RA");
   }
@@ -94,7 +101,7 @@ my $plus = $filler . $A_seq . ('C' x 60) . $B_seq . $filler;
 # chrM: the same locus reverse-complemented (so A is still 5' of B in transcription order)
 my $L = length $plus;
 my $minus = revcomp($plus);
-my $flip = sub { my ($ex) = @_; return [ map { [ $L - $_->[0] + 1, $L - $_->[1] + 1 ] } @$ex ] };
+my $flip = sub { my ($ex) = @_; my @flipped; for my $e (@$ex) { push @flipped, [ $L - $e->[0] + 1, $L - $e->[1] + 1 ] } return \@flipped };
 
 # chrN: fragment A without a stop (ends in a sense codon GCT), then B
 my $An_cds = 'ATG' . ('GCT' x 21);
@@ -131,17 +138,17 @@ write_file("$dir/genome.fa", $fa);
 write_file("$dir/genome.fa.fai", $fai);
 
 my @gff = ('##gff-version 3');
-push @gff, gff_block('chrP', 'A', '+', $A_ex, [phases_for(0, map { length } @A_pieces)]);
-push @gff, gff_block('chrP', 'B', '+', $B_ex, [phases_for(0, map { length } @B_pieces)]);
+push @gff, gff_block('chrP', 'A', '+', $A_ex, [phases_for(0, lengths_of(@A_pieces))]);
+push @gff, gff_block('chrP', 'B', '+', $B_ex, [phases_for(0, lengths_of(@B_pieces))]);
 # on chrM the upstream gene in genome coordinates is B; transcription order still A then B
-push @gff, gff_block('chrM', 'MB', '-', $flip->($B_ex), [phases_for(0, map { length } @B_pieces)]);
-push @gff, gff_block('chrM', 'MA', '-', $flip->($A_ex), [phases_for(0, map { length } @A_pieces)]);
-push @gff, gff_block('chrN', 'An', '+', $An_ex, [phases_for(0, map { length } @An_pieces)]);
-push @gff, gff_block('chrN', 'Bn', '+', $Bn_ex, [phases_for(0, map { length } @B_pieces)]);
-push @gff, gff_block('chrF', 'Af', '+', $Af_ex, [phases_for(0, map { length } @Af_pieces)]);
-push @gff, gff_block('chrF', 'Bf', '+', $Bf_ex, [phases_for(0, map { length } @B_pieces)]);
-push @gff, gff_block('chrS', 'As', '+', $As_ex, [phases_for(0, map { length } @As_pieces)]);
-push @gff, gff_block('chrS', 'Bs', '+', $Bs_ex, [phases_for(0, map { length } @B_pieces)]);
+push @gff, gff_block('chrM', 'MB', '-', $flip->($B_ex), [phases_for(0, lengths_of(@B_pieces))]);
+push @gff, gff_block('chrM', 'MA', '-', $flip->($A_ex), [phases_for(0, lengths_of(@A_pieces))]);
+push @gff, gff_block('chrN', 'An', '+', $An_ex, [phases_for(0, lengths_of(@An_pieces))]);
+push @gff, gff_block('chrN', 'Bn', '+', $Bn_ex, [phases_for(0, lengths_of(@B_pieces))]);
+push @gff, gff_block('chrF', 'Af', '+', $Af_ex, [phases_for(0, lengths_of(@Af_pieces))]);
+push @gff, gff_block('chrF', 'Bf', '+', $Bf_ex, [phases_for(0, lengths_of(@B_pieces))]);
+push @gff, gff_block('chrS', 'As', '+', $As_ex, [phases_for(0, lengths_of(@As_pieces))]);
+push @gff, gff_block('chrS', 'Bs', '+', $Bs_ex, [phases_for(0, lengths_of(@B_pieces))]);
 write_file("$dir/in.gff", join("\n", @gff) . "\n");
 write_file("$dir/merges.txt", join("\t", qw(merge_id genes_in_order flag max_tiling_hits best_combined_cov_pct)) . "\n"
   . "merge_1\tA,B\tCLEAN\t3\t95\nmerge_2\tMB,MA\tCLEAN\t3\t95\nmerge_3\tAn,Bn\tCLEAN\t3\t95\n"
@@ -175,7 +182,7 @@ sub merged {
   my @segs = @{$cds{$merge_id} // []};
   return ('', 'no CDS') unless @segs;
   my $strand = $segs[0][6];
-  @segs = $strand eq '-' ? sort { $b->[4] <=> $a->[4] } @segs : sort { $a->[3] <=> $b->[3] } @segs;
+  @segs = $strand eq '-' ? sort(by_gff_end_desc @segs) : sort(by_gff_start @segs);
   my ($nt, @got_phase, @lens) = ('');
   for my $s (@segs) {
     my $piece = substr($chr{$s->[0]}, $s->[3] - 1, $s->[4] - $s->[3] + 1);
@@ -205,7 +212,7 @@ check($p5 eq $expected_protein && $ph5 eq 'ok', 'M5: a stop codon split by an in
 # ================================================================ find_split_genes.pl
 # genes on chr1 (+): g1 g2 adjacent; chr6: g3 g4 adjacent (wrong order on the reference); chr2 (-): h1 h2;
 # chr3: d1 d2 domain-sharing (qcov 30); chr4: k1, a long gene L containing 20 genes, k2;
-# chr5: o1 o2 with a 40-aa overhang at the junction
+# chr5: o1 o2 with a 40-aa overhang at the junction; chr7: i1 i2 tiling REF (50%) and REFC (95%)
 my @fgff = ('##gff-version 3');
 my $gene = sub { my ($chr, $id, $s, $e, $strand) = @_;
   push @fgff, join("\t", $chr, 't', 'gene', $s, $e, '.', $strand, '.', "ID=$id"),
@@ -215,25 +222,32 @@ $gene->('chr6', 'g3', 10000, 11000, '+'); $gene->('chr6', 'g4', 12000, 13000, '+
 $gene->('chr2', 'h1', 1000, 2000, '-'); $gene->('chr2', 'h2', 3000, 4000, '-');
 $gene->('chr3', 'd1', 1000, 2000, '+'); $gene->('chr3', 'd2', 3000, 4000, '+');
 $gene->('chr4', 'k1', 500, 900, '+'); $gene->('chr4', 'L', 1000, 900000, '+');
-$gene->('chr4', "n$_", 1000 + $_ * 40000, 1000 + $_ * 40000 + 500, '+') for 1 .. 20;
+for my $n (1 .. 20) { $gene->('chr4', "n$n", 1000 + $n * 40000, 1000 + $n * 40000 + 500, '+') }
 $gene->('chr4', 'k2', 950000, 951000, '+');
 $gene->('chr5', 'o1', 1000, 2000, '+'); $gene->('chr5', 'o2', 3000, 4000, '+');
+$gene->('chr7', 'i1', 1000, 2000, '+'); $gene->('chr7', 'i2', 3000, 4000, '+');
 write_file("$dir/f.gff", join("\n", @fgff) . "\n");
 # subject: REF (500 aa) and REF2, a second reference with the same tiling (a tie in coverage)
-write_file("$dir/subject.fa", ">REF gene:ENSG1 gene_symbol:REF1 description:reference one\nM\n>REF2 gene:ENSG2 gene_symbol:REF2 description:reference two\nM\n");
-my @ids = qw(g1 g2 g3 g4 h1 h2 d1 d2 k1 k2 L o1 o2);
-write_file("$dir/query.fa", join('', map { ">$_.t desc $_\nM\n" } @ids));
+write_file("$dir/subject.fa", ">REF gene:ENSG1 gene_symbol:REF1 description:reference one\nM\n>REF2 gene:ENSG2 gene_symbol:REF2 description:reference two\nM\n"
+  . ">REFC gene:ENSG3 gene_symbol:REFC description:reference close\nM\n");
+my @ids = qw(g1 g2 g3 g4 h1 h2 d1 d2 k1 k2 L o1 o2 i1 i2);
+my $query_fa = '';
+for my $id (@ids) { $query_fa .= ">$id.t desc $id\nM\n" }
+write_file("$dir/query.fa", $query_fa);
 # qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore scovhsp slen qcovhsp qlen
-my $row = sub { my ($q, $s, $ss, $se, $qs, $qe, $qlen) = @_;
+my $row = sub { my ($q, $s, $ss, $se, $qs, $qe, $qlen, $pident) = @_;
   my $scov = int(100 * ($se - $ss + 1) / 500); my $qcov = int(100 * ($qe - $qs + 1) / $qlen);
-  return join("\t", "$q.t", $s, 50, $se - $ss + 1, 0, 0, $qs, $qe, $ss, $se, '1e-50', 300, $scov, 500, $qcov, $qlen) . "\n" };
+  return join("\t", "$q.t", $s, $pident // 50,$se - $ss + 1, 0, 0, $qs, $qe, $ss, $se, '1e-50', 300, $scov, 500, $qcov, $qlen) . "\n" };
 my $blast = join('',
-  (map { $row->('g1', $_, 1, 240, 1, 240, 245), $row->('g2', $_, 245, 495, 1, 251, 255) } qw(REF REF2)),   # F1 (+ two tied refs)
+  $row->('g1', 'REF', 1, 240, 1, 240, 245), $row->('g2', 'REF', 245, 495, 1, 251, 255),     # F1
+  $row->('g1', 'REF2', 1, 240, 1, 240, 245), $row->('g2', 'REF2', 245, 495, 1, 251, 255),   # F1: a second, tied reference
   $row->('g3', 'REF', 245, 495, 1, 251, 255), $row->('g4', 'REF', 1, 240, 1, 240, 245),   # F2 wrong order
   $row->('h1', 'REF', 245, 495, 1, 251, 255), $row->('h2', 'REF', 1, 240, 1, 240, 245),   # F3 - strand: h1 (upstream) C-terminal
   $row->('d1', 'REF', 1, 240, 1, 240, 800), $row->('d2', 'REF', 245, 495, 1, 251, 850),   # F4 qcov 30%
   $row->('k1', 'REF', 1, 240, 1, 240, 245), $row->('k2', 'REF', 245, 495, 1, 251, 255),   # F5 around L
   $row->('o1', 'REF', 1, 240, 1, 240, 285), $row->('o2', 'REF', 245, 495, 1, 251, 255),   # F7 o1: 45 aa past its alignment
+  $row->('i1', 'REF', 1, 240, 1, 240, 245), $row->('i2', 'REF', 245, 495, 1, 251, 255),   # F8 distant reference (50%)
+  $row->('i1', 'REFC', 1, 240, 1, 240, 245, 95), $row->('i2', 'REFC', 245, 495, 1, 251, 255, 95),   # F8 close reference (95%)
 );
 write_file("$dir/blast.tsv", $blast);
 my $find = "$FindBin::Bin/../find_split_genes.pl";
@@ -261,6 +275,23 @@ check(exists $cand{'k1,k2'} && ($cand{'k1,k2'}[12] // '') eq '2',
 check(($cand{'g1,g2'}[6] // '') eq 'REF', 'F6: a coverage tie between two references goes to the lower id (REF)', $cand{'g1,g2'}[6]);
 check(`cat \Q$runs[0]\E/split_genes_*.txt` eq `cat \Q$runs[1]\E/split_genes_*.txt`, 'F6: identical output under two hash seeds');
 check(scalar(($cand{'o1,o2'}[16] // '') =~ /JUNCTION_OVERHANG/), 'F7: a piece 45 aa past its alignment at the junction -> JUNCTION_OVERHANG', $cand{'o1,o2'}[16]);
+
+# F8: columns by header name
+my %mcol;
+open my $mh, '<', "$runs[0]/split_genes_merge.txt" or die;
+my $mhdr = <$mh>;
+close $mh;
+chomp $mhdr;
+my @mhdr = split /\t/, $mhdr;
+for my $i (0 .. $#mhdr) { $mcol{ $mhdr[$i] } = $i }
+my $i_row = $cand{'i1,i2'} // [];
+check(($i_row->[ $mcol{best_hit} ] // '') eq 'REFC', 'F8: the closer reference (95% identity) is best_hit over the distant one (50%)',
+      $i_row->[ $mcol{best_hit} ]);
+my $i_cands = $i_row->[ $mcol{ref_candidates} ] // '';
+chomp $i_cands;
+check($i_cands eq 'REFC,REF', 'F8: ref_candidates ranks the closer reference first', $i_cands);
+check(abs(($i_row->[ $mcol{best_hit_id_cov} ] // 0) - 0.95 * 491 / 500) < 0.002,
+      'F8: best_hit_id_cov = identity x aligned span / reference length', $i_row->[ $mcol{best_hit_id_cov} ]);
 
 print $failed ? "\n$failed FAILED, $passed passed\n" : "all $passed checks passed\n";
 exit($failed ? 1 : 0);

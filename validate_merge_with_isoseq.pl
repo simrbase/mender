@@ -2,6 +2,13 @@
 use strict;
 use warnings;
 
+# spanning reads by genes covered (most first), then read id; a named comparator:
+# sort passes the two elements in @_
+sub by_genes_covered_then_read($$) {
+    my ($left, $right) = @_;
+    return $right->[0] <=> $left->[0] || $left->[1] cmp $right->[1];
+}
+
 ## validate_with_isoseq.pl
 ##
 ## Validates split gene merge candidates by finding IsoSeq reads that span
@@ -115,6 +122,10 @@ my $header = <MERGE>;
 chomp $header;
 print $header, "\t", "spanning_isoseq_count", "\t", "spanning_isoseq_detail",
                "\t", "isoseq_flag", "\n";
+my @hdr_cols = split "\t", $header;
+my $col_genes;
+for my $i (0 .. $#hdr_cols) { $col_genes = $i if $hdr_cols[$i] eq "genes_in_order" }
+die "merge table $merge_file has no genes_in_order column\n" unless defined $col_genes;
 
 my $total         = 0;
 my $with_spanning = 0;
@@ -125,9 +136,8 @@ while (my $line = <MERGE>){
     chomp $line;
     my @fields = split "\t", $line;
 
-    # gene IDs are in column 3 (0-indexed: col 2), comma separated
-    # these are in genomic order from the merge table
-    my @genes   = split ",", $fields[2];
+    # gene IDs, comma separated, in genomic order (the genes_in_order column)
+    my @genes   = split ",", $fields[$col_genes];
     my $n_genes = scalar @genes;
 
     # collect all IsoSeq reads that overlap any gene in this group
@@ -145,7 +155,8 @@ while (my $line = <MERGE>){
     my @spanning_details;
     for my $iso (sort keys %candidate_isos){
         # get the group genes this read covers, in genomic order
-        my @covered = grep { exists $candidate_isos{$iso}{$_} } @genes;
+        my @covered;
+        for my $gene (@genes) { push @covered, $gene if exists $candidate_isos{$iso}{$gene} }
         my $n_covered = scalar @covered;
         next unless $n_covered >= 2;
 
@@ -160,13 +171,12 @@ while (my $line = <MERGE>){
     }
 
     # sort by genes covered descending, then alphabetically by read ID
-    my @sorted = sort { $b->[0] <=> $a->[0] || $a->[1] cmp $b->[1] }
-                 @spanning_details;
+    my @sorted = sort by_genes_covered_then_read @spanning_details;
 
     my $spanning_count  = scalar @sorted;
-    my $spanning_detail = $spanning_count > 0
-        ? join(";", map { $_->[2] } @sorted)
-        : "none";
+    my @details;
+    for my $span (@sorted) { push @details, $span->[2] }
+    my $spanning_detail = $spanning_count > 0 ? join(";", @details) : "none";
 
     # ---------------------------------------------------------------------------
     # Determine isoseq_flag
@@ -179,7 +189,8 @@ while (my $line = <MERGE>){
 
     if ($spanning_count > 0) {
         # check if any read spans all genes
-        my $has_full = grep { $_->[0] == $n_genes } @sorted;
+        my $has_full = 0;
+        for my $span (@sorted) { $has_full = 1 if $span->[0] == $n_genes }
 
         if ($has_full) {
             $isoseq_flag = "FULL_SPAN";
@@ -188,13 +199,13 @@ while (my $line = <MERGE>){
             my $first_gene = $genes[0];
             my $last_gene  = $genes[-1];
 
-            my $first_covered = grep {
-                grep { $_ eq $first_gene } @{ $_->[3] }
-            } @sorted;
-
-            my $last_covered = grep {
-                grep { $_ eq $last_gene } @{ $_->[3] }
-            } @sorted;
+            my ($first_covered, $last_covered) = (0, 0);
+            for my $span (@sorted) {
+                for my $gene (@{ $span->[3] }) {
+                    $first_covered = 1 if $gene eq $first_gene;
+                    $last_covered  = 1 if $gene eq $last_gene;
+                }
+            }
 
             # PARTIAL_SPAN if a terminal gene is not reached by any spanning read
             # Only meaningful for chains with 3+ genes — for 2-gene pairs

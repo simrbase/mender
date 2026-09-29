@@ -35,6 +35,17 @@ use POSIX qw(strftime);
 use File::Basename;
 use Cwd qw(abs_path);
 
+# numbers ascending (a named comparator: sort passes the two elements in @_)
+sub by_number($$) { my ($left, $right) = @_; return $left <=> $right }
+
+# merges whose translation result is REVIEW
+sub count_review {
+    my ($attrs) = @_;
+    my $n = 0;
+    for my $gid (keys %$attrs) { $n++ if $attrs->{$gid}{result} eq "REVIEW" }
+    return $n;
+}
+
 my @argv_orig   = @ARGV;   # capture before GetOptions consumes it
 my $config_file = undef;
 my $steps_opt   = undef;
@@ -154,13 +165,18 @@ my $tv_final_incl_review = cfg("validation", "final_gff_include_review", "yes");
 my $run_miniprot      = cfg("miniprot", "run_miniprot", "yes");
 my $mp_flank          = cfg("miniprot", "flank",        "5000");
 my $mp_min_prot_cov   = cfg("miniprot", "min_prot_cov", "0.80");
+my $mp_max_refs       = cfg("miniprot", "max_refs",     "10");
 
 # config keys of the MSA junction scoring, removed 2026-09-28 (it did not separate
 # false merges from real ones): accepted but ignored, with a warning
-my @obsolete_msa_keys = grep { exists $cfg{validation}{$_} }
-    qw(min_junction_score no_msa keep_msa aligner w_conservation w_continuity w_gap
-       min_msa_refs max_msa_refs swissprot_fa swissprot_db);
-push @obsolete_msa_keys, grep { exists $cfg{paths}{$_} } qw(mafft_bin kalign_bin);
+my @obsolete_msa_keys;
+for my $key (qw(min_junction_score no_msa keep_msa aligner w_conservation w_continuity w_gap
+                min_msa_refs max_msa_refs swissprot_fa swissprot_db)) {
+    push @obsolete_msa_keys, $key if exists $cfg{validation}{$key};
+}
+for my $key (qw(mafft_bin kalign_bin)) {
+    push @obsolete_msa_keys, $key if exists $cfg{paths}{$key};
+}
 
 # paths
 my $scripts_dir  = cfg("paths", "scripts_dir",  "") || dirname(abs_path($0));
@@ -215,6 +231,7 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
         end_tol              => $end_tol,
         isoseq_min_spanning  => $isoseq_min_span,
         flank                => $mp_flank,
+        max_refs             => $mp_max_refs,
         large_span_warn      => $large_span_warn,
         large_span_hard      => $large_span_hard,
     );
@@ -240,11 +257,12 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
 
     # flag name validation in skip_flags / flags (warn only — unknown flags are skipped silently
     # at runtime, so this catches typos before the run wastes time)
-    my %known_flags = map { $_ => 1 } qw(
+    my %known_flags;
+    for my $known (qw(
         CLEAN STRONG SINGLE_HIT WEAK_END WEAK_INTERNAL LOW_COV
         SKIPPED_GENE OPPOSITE_STRAND_SKIP TRANSITIVE_JOIN MULTI_ISOFORM_JOIN LARGE_SPAN LARGE_SPAN_EXTREME
         JUNCTION_OVERHANG
-    );
+    )) { $known_flags{$known} = 1 }
     for my $item (["skip_flags", $skip_flags], ["flags", $flags]) {
         my ($key, $val) = @$item;
         next if $val eq "all" || $val eq "";
@@ -257,12 +275,12 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
 
     if (@warnings) {
         print "WARNING: config issue in $config_file:\n";
-        print "  $_\n" for @warnings;
+        for my $warning (@warnings) { print "  $warning\n" }
         print "\n";
     }
     if (@errors) {
         print "ERROR: invalid config in $config_file:\n";
-        print "  $_\n" for @errors;
+        for my $error (@errors) { print "  $error\n" }
         die "\nAborting — fix the config errors above before running.\n";
     }
 }
@@ -293,13 +311,13 @@ if (defined $steps_opt) {
     for my $s (split /,/, $steps_opt) {
         $run_steps{$s+0} = 1;
     }
-    @steps_requested = sort { $a <=> $b } keys %run_steps;
+    @steps_requested = sort by_number keys %run_steps;
     # steps not in --steps are "not requested"
     for my $s (1..10) {
         $step_skip{$s} = "not in --steps" unless $run_steps{$s};
     }
 } else {
-    $run_steps{$_} = 1 for (1..10);
+    for my $s (1 .. 10) { $run_steps{$s} = 1 }
     @steps_requested = (1..10);
 }
 
@@ -388,7 +406,8 @@ sub shared_step {
     }
 
     # Reuse if all output files already exist
-    my @missing = grep { !-f $_ } @$files;
+    my @missing;
+    for my $file (@$files) { push @missing, $file unless -f $file }
     unless (@missing) {
         print "\n--- $desc ---\n";
         print "REUSE: output already exists — skipping regeneration\n";
@@ -420,7 +439,7 @@ print "MENDER PIPELINE\n";
 print "=" x 60, "\n";
 print "Config:          $config_file\n";
 print "Date:            $date_tag\n";
-print "Steps:           ", join(", ", sort { $a <=> $b } keys %run_steps), "\n";
+print "Steps:           ", join(", ", sort by_number keys %run_steps), "\n";
 print "Dry run:         ", ($dry_run ? "YES" : "no"), "\n";
 print "-" x 60, "\n";
 print "Input GFF:       $gff\n";
@@ -443,7 +462,7 @@ if ($run_transl_val !~ /^no$/i) {
     print "  min_merged_cov:$tv_min_mrgd_cov\n";
     print "  min_ref_cov:   $tv_min_ref_cov\n";
 }
-print "miniprot rebuild: ", ($run_miniprot =~ /^no$/i ? "no" : "yes (flank $mp_flank bp, min_prot_cov $mp_min_prot_cov)"), "\n";
+print "miniprot rebuild: ", ($run_miniprot =~ /^no$/i ? "no" : "yes (flank $mp_flank bp, min_prot_cov $mp_min_prot_cov, up to $mp_max_refs references)"), "\n";
 print "=" x 60, "\n";
 
 # ---------------------------------------------------------------------------
@@ -493,7 +512,7 @@ print "=" x 60, "\n";
 
     if (@missing) {
         print "\nERROR: required tools not found:\n";
-        print "  $_\n" for @missing;
+        for my $tool (@missing) { print "  $tool\n" }
         print "Load the relevant modules or set bin paths in the [paths] config section.\n";
         exit 1;
     }
@@ -540,10 +559,10 @@ if ($run_steps{1}) {
         #   2. strip terminal stop (* or .) — biologically normal, just upsets diamond
         #   3. remove entire sequence if internal stops or dots remain
         run_cmd(
-            "perl -ne 'BEGIN{\$/=\">\"}; chomp; next unless /\\S/; " .
-            "my (\$h, \$s) = split(/\\n/, \$_, 2); \$s =~ s/\\n//g; " .
+            "perl -e 'local \$/ = \">\"; while (my \$rec = <>) { chomp \$rec; next unless \$rec =~ /\\S/; " .
+            "my (\$h, \$s) = split(/\\n/, \$rec, 2); \$s =~ s/\\n//g; " .
             "\$s =~ s/[*.]\$//; " .
-            "print \">\$h\\n\$s\\n\" unless \$s =~ /[*.]/' $proteome_fa > $clean_fa",
+            "print \">\$h\\n\$s\\n\" unless \$s =~ /[*.]/ }' $proteome_fa > $clean_fa",
             "Clean protein fasta: strip terminal stops, remove sequences with internal stops"
         );
 
@@ -724,7 +743,7 @@ if ($run_steps{6}) {
               . " --merged_gff $placeholder_gff --removed_gff $removed_gff"
               . " --merge_table $validated_table --ref_fa $subject_fa --genome_fa $genome_fa"
               . " --out $output_gff --report $run_dir/miniprot.tsv --scratch $run_workdir"
-              . " --flank $mp_flank --min_prot_cov $mp_min_prot_cov --threads $threads"
+              . " --flank $mp_flank --min_prot_cov $mp_min_prot_cov --max_refs $mp_max_refs --threads $threads"
               . " --miniprot_bin $miniprot_bin --samtools_bin $samtools_bin",
               "Rebuild merged genes with miniprot");
     }
@@ -778,7 +797,7 @@ if ($run_steps{7}) {
             print $mo "##gff-version 3\n";
             open my $fh, "<", $output_gff
                 or die "Cannot open $output_gff: $!\n";
-            while (<$fh>) { print $mo $_ if /\tMender\t/ }
+            while (my $line = <$fh>) { print $mo $line if $line =~ /\tMender\t/ }
             close $fh;
             close $mo;
 
@@ -915,7 +934,8 @@ if ($run_steps{9}) {
             open my $fh, "<", $report_tsv or die "Cannot open $report_tsv: $!\n";
             chomp(my $hdr = <$fh> // "");
             my @cols = split /\t/, $hdr;
-            my %ci = map { $cols[$_] => $_ } 0 .. $#cols;
+            my %ci;
+            for my $i (0 .. $#cols) { $ci{ $cols[$i] } = $i }
             die "ERROR: $report_tsv lacks new_gene_id / overall_result columns\n"
                 unless defined $ci{new_gene_id} && defined $ci{overall_result};
             while (my $line = <$fh>) {
@@ -934,9 +954,10 @@ if ($run_steps{9}) {
         my $parse_excl_gff = sub {
             my ($gff_file) = @_;
             open my $fh, "<", $gff_file or return;
-            while (<$fh>) {
-                next unless /\tgene\t/;
-                my $attr_str = (split /\t/)[8] // "";
+            while (my $line = <$fh>) {
+                next unless $line =~ /\tgene\t/;
+                chomp $line;
+                my $attr_str = (split /\t/, $line)[8] // "";
                 my ($gid)   = $attr_str =~ /\bID=([^;]+)/;
                 my ($mfrom) = $attr_str =~ /\bmerged_from=([^;]+)/;
                 next unless $gid && $mfrom;
@@ -988,7 +1009,7 @@ if ($run_steps{9}) {
                 if ($cur_is_excluded) {
                     # Replace excluded Mender gene with its original source gene blocks
                     for my $src_id (@{ $exclude{$cur_id} }) {
-                        print $out "$_\n" for @{ $removed_blocks{$src_id} // [] };
+                        for my $line (@{ $removed_blocks{$src_id} // [] }) { print $out "$line\n" }
                     }
                 } else {
                     # Annotate retained Mender genes with transl validation flags
@@ -996,7 +1017,7 @@ if ($run_steps{9}) {
                         my $ta = $transl_attrs{$cur_id};
                         $cur_block[0] .= ";transl_result=$ta->{result}";
                     }
-                    print $out "$_\n" for @cur_block;
+                    for my $line (@cur_block) { print $out "$line\n" }
                 }
                 @cur_block = ();
                 ($cur_id, $cur_is_mender, $cur_is_excluded) = (undef, 0, 0);
@@ -1025,7 +1046,7 @@ if ($run_steps{9}) {
         printf "  REVIEW merges replaced with source genes: %d\n", $n_review_excl
             if $tv_final_incl_review =~ /^no$/i;
         printf "  REVIEW merges retained (PASS-equivalent): %d\n",
-            (scalar(grep { $transl_attrs{$_}{result} eq "REVIEW" } keys %transl_attrs) - $n_review_excl)
+            (count_review(\%transl_attrs) - $n_review_excl)
             if %transl_attrs;
         print  "  Final validated GFF: $validated_gff\n";
     }
@@ -1097,7 +1118,7 @@ if ($run_steps{10}) {
     my @rpt;  # lines to write
 
     my $r = sub { push @rpt, @_ };  # append lines
-    my $h = sub { push @rpt, "", "=" x 60, "  $_[0]", "=" x 60 };
+    my $h = sub { my ($title) = @_; push @rpt, "", "=" x 60, "  $title", "=" x 60 };
 
     $h->("MENDER RUN REPORT");
     $r->("Start:       $start_stamp");
@@ -1165,6 +1186,7 @@ if ($run_steps{10}) {
     $r->("  run_miniprot:               " . ($run_miniprot =~ /^no$/i ? "no" : "yes"));
     $r->("  flank:                      $mp_flank bp");
     $r->("  min_prot_cov:               $mp_min_prot_cov");
+    $r->("  max_refs:                   $mp_max_refs");
     $r->("  run_dir:                    $run_dir");
     $r->("  run_workdir:                $run_workdir");
     $r->("  final_gff_include_review:   " . ($tv_final_incl_review =~ /^no$/i ? "no" : "yes"));
@@ -1191,10 +1213,11 @@ if ($run_steps{10}) {
         open my $fh, "<", $report_tsv or die;
         chomp(my $hdr = <$fh> // "");
         my @cols = split /\t/, $hdr;
-        my ($c_res) = grep { $cols[$_] eq "overall_result" } 0 .. $#cols;
-        while (<$fh>) {
-            chomp;
-            my @f = split /\t/;
+        my $c_res;
+        for my $i (0 .. $#cols) { $c_res //= $i if $cols[$i] eq "overall_result" }
+        while (my $line = <$fh>) {
+            chomp $line;
+            my @f = split /\t/, $line;
             next unless defined $c_res && defined $f[$c_res];
             $counts{$f[$c_res]}++;
             $total++;
@@ -1247,14 +1270,14 @@ if ($run_steps{10}) {
 
     if (@reuse_log) {
         $r->("", "Shared files reused from previous run:");
-        $r->("  $_") for @reuse_log;
+        for my $reused (@reuse_log) { $r->("  $reused") }
     }
 
     $r->("", "=" x 60, "");
 
     unless ($dry_run) {
         open my $rfh, ">", $report_file or die "Cannot write run report: $!\n";
-        print $rfh "$_\n" for @rpt;
+        for my $line (@rpt) { print $rfh "$line\n" }
         close $rfh;
         print "\nRun report written: $report_file\n";
     }

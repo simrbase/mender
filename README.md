@@ -510,7 +510,7 @@ bash split_gene_report_checks.sh
 
 ## Output File Column Reference
 
-### `merge_candidates.txt` (17 columns)
+### `merge_candidates.txt` (19 columns)
 ```
 1:merge_id              unique merge group identifier
 2:num_genes             number of genes in this merge
@@ -518,9 +518,11 @@ bash split_gene_report_checks.sh
 4:coords_in_order       comma-sep coordinates (chr.start.end)
 5:ref                   chromosome
 6:gene_descs            comma-sep gene descriptions
-7:best_hit              reference protein best representing the chain
+7:best_hit              reference protein best representing the chain: most chain genes hit,
+                        then identity-weighted coverage (a close reference beats a distant one)
 8:hit_desc              description of best_hit
-9:best_combined_cov_pct % of reference protein covered by the chain
+9:best_combined_cov_pct % of a reference protein covered by the best pair (its highest-coverage
+                        shared reference, which may differ from best_hit)
 10:best_gap             aa gap between the two best tiling alignments
 11:evalues              comma-sep e-values vs best_hit
 12:junction_tiling_hits pipe-sep hit counts per junction (chains only)
@@ -529,14 +531,17 @@ bash split_gene_report_checks.sh
 15:max_tiling_hits      highest independent tiling hit count across any pair
 16:num_pairs_in_chain   number of pairwise relationships in the chain
 17:flag                 quality flag(s) — see Flag Definitions below
+18:best_hit_id_cov      identity-weighted coverage of best_hit: sum(pident x aligned span) / length
+19:ref_candidates       comma-sep ranked reference proteins (best_hit first, at most 10);
+                        the step 6 miniprot rebuild tries them in order
 ```
 
-### `isoseq_validated.txt` (20 columns)
-Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
+### `isoseq_validated.txt` (22 columns)
+Columns 1–19 are identical to `merge_candidates.txt`. Three columns are added:
 ```
-18:spanning_isoseq_count  number of IsoSeq reads spanning 2+ genes
-19:spanning_isoseq_detail per-read detail: read_id(Nof M):gene1+gene2+...
-20:isoseq_flag            FULL_SPAN | PARTIAL_SPAN | NO_SPANNERS
+20:spanning_isoseq_count  number of IsoSeq reads spanning 2+ genes
+21:spanning_isoseq_detail per-read detail: read_id(Nof M):gene1+gene2+...
+22:isoseq_flag            FULL_SPAN | PARTIAL_SPAN | NO_SPANNERS
 ```
 
 ### `report.tsv` (17 columns, step 8 output)
@@ -581,7 +586,7 @@ Columns 1–17 are identical to `merge_candidates.txt`. Three columns are added:
 | `LARGE_SPAN` | Merged locus genomic span exceeds `large_span_warn` (default 500 kb). Review with IsoSeq for weak-evidence merges. |
 | `LARGE_SPAN_EXTREME` | Merged locus span exceeds `large_span_extreme` (default 2 Mb). Recommend adding to `skip_flags` unless IsoSeq confirms. |
 
-### IsoSeq flags (column 20 of `isoseq_validated.txt`)
+### IsoSeq flags (column 22 of `isoseq_validated.txt`)
 
 | Flag | Meaning |
 |------|---------|
@@ -680,15 +685,20 @@ Prefer transcripts supported by more than one library or tissue.
 
 `merge_split_genes.pl` joins the fragments' own exons, so the joined "intron" has no real
 splice sites and an exon missing at the break stays missing. `rebuild_with_miniprot.pl`
-aligns the reference protein the fragments tiled against to the merged locus with
-miniprot (spliced protein-to-genome alignment). A true split gives one alignment covering
+aligns a reference protein the fragments tiled against to the merged locus with
+miniprot (spliced protein-to-genome alignment): the merge's `ref_candidates`, best-ranked
+first (up to `max_refs`), until one is SUPPORTED. A distant reference aligned to the
+genome often needs a spurious frameshift where a closer one aligns cleanly. A true split gives one alignment covering
 most of the protein and every fragment, with real splice sites and no frameshift; that
 alignment replaces the placeholder model. A false merge of two different genes does not:
 in a *Congeria* negative control (100 adjacent pairs of distinct full-length genes merged
 on purpose) all 100 were NOT_SUPPORTED, while 65 of 93 real merges were SUPPORTED and
 rebuilt (median 97% of the reference protein; no internal stops) with a distant
-(Lottia/Capitella) reference. Rebuilt models are CDS-only (no UTRs) and start where the
-reference alignment starts, which is not always a start codon.
+(Lottia/Capitella) reference. Rebuilt models are CDS-only (no UTRs). miniprot's model starts
+and ends where the reference alignment does; when that is not a start (stop) codon, the 5'
+(3') fragment's own start (stop) codon completes it if it is in frame there
+(`start_codon=` / `stop_codon=` `present | from_fragment:<gene> | incomplete | absent`); the
+model is never extended into sequence no annotation covered.
 
 ## Without IsoSeq
 

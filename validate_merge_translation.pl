@@ -193,6 +193,9 @@ sub parse_attrs {
 # ---------------------------------------------------------------------------
 # Helper: map unaligned aa position (1-based) to alignment column index
 # ---------------------------------------------------------------------------
+# DIAMOND hits by bitscore, highest first (a named comparator: sort passes the two in @_)
+sub by_bitscore_desc($$) { my ($left, $right) = @_; return $right->{bitscore} <=> $left->{bitscore} }
+
 sub unaligned_to_col {
     my ($seq, $target) = @_;
     my $count = 0;
@@ -339,7 +342,9 @@ for my $tid (@$mrgd_prot_order) {
 
 my $n_prot_found = scalar keys %merged_prot;
 printf "  Merged proteins extracted: %d / %d\n", $n_prot_found, $n_merged;
-printf "  With internal stops:       %d\n", scalar grep { $has_internal_stop{$_} } keys %has_internal_stop;
+my $n_internal_stop = 0;
+for my $gid (keys %has_internal_stop) { $n_internal_stop++ if $has_internal_stop{$gid} }
+printf "  With internal stops:       %d\n", $n_internal_stop;
 
 # Write a clean per-gene FASTA for diamond:
 #   - one sequence per merged gene (representative)
@@ -427,7 +432,7 @@ my %gene_cov_metrics;   # new_gene_id -> { merged_cov_by_ref, ... }
 
     # Sort hits by bitscore, deduplicate by sseqid, keep top 5
     for my $gid (keys %raw_hits) {
-        my @sorted = sort { $b->{bitscore} <=> $a->{bitscore} } @{ $raw_hits{$gid} };
+        my @sorted = sort by_bitscore_desc @{ $raw_hits{$gid} };
         my %seen;
         my @top;
         for my $h (@sorted) {
@@ -465,7 +470,8 @@ for my $gid (keys %merge_info) {
     }
 }
 
-my $n_hits = grep { scalar(@{ $gene_diamond_hits{$_} }) > 0 } keys %gene_diamond_hits;
+my $n_hits = 0;
+for my $gid (keys %gene_diamond_hits) { $n_hits++ if @{ $gene_diamond_hits{$gid} } }
 printf "  Merged genes with diamond hits: %d / %d\n", $n_hits, $n_merged;
 
 # ---------------------------------------------------------------------------
@@ -479,7 +485,7 @@ if (defined $merge_table && -f $merge_table) {
     my $hdr = <$mfh>; chomp $hdr;
     my @cols = split /\t/, $hdr;
     my %ci;
-    $ci{$cols[$_]} = $_ for 0..$#cols;
+    for my $i (0 .. $#cols) { $ci{ $cols[$i] } = $i }
     my $c_mid  = $ci{merge_id} // $ci{merge_id};
     my $c_flag = $ci{flag};
     while (my $line = <$mfh>) {
@@ -555,7 +561,7 @@ for my $gid (keys %merge_info) {
 }
 
 my %counts = (PASS => 0, FAIL => 0, REVIEW => 0);
-$counts{ $results{$_}{overall_result} }++ for keys %results;
+for my $gid (keys %results) { $counts{ $results{$gid}{overall_result} }++ }
 printf "  PASS:   %d\n  FAIL:   %d\n  REVIEW: %d\n",
     $counts{PASS}, $counts{FAIL}, $counts{REVIEW};
 
@@ -627,10 +633,11 @@ open my $ffh, ">", $fail_gff   or die "Cannot write $fail_gff: $!\n";
 open my $rfh, ">", $review_gff or die "Cannot write $review_gff: $!\n";
 
 # Write GFF3 version header to all output files
-my @gff_hdr = grep { /^##gff-version/ || /^##genome-build/ } @gff_header_lines;
+my @gff_hdr;
+for my $hdr_line (@gff_header_lines) { push @gff_hdr, $hdr_line if $hdr_line =~ /^##(?:gff-version|genome-build)/ }
 push @gff_hdr, "##gff-version 3" unless @gff_hdr;
 for my $fh ($pfh, $ffh, $rfh) {
-    print $fh "$_\n" for @gff_hdr;
+    for my $hdr_line (@gff_hdr) { print $fh "$hdr_line\n" }
 }
 
 my %result_fh = (PASS => $pfh, FAIL => $ffh, REVIEW => $rfh);
@@ -646,13 +653,20 @@ for my $gid (@gff_gene_order) {
     # written to the PASS file (with their exons/CDS/UTRs); the gene records them.
     my @dropped;
     if ($res eq "PASS") {
-        my %drop = map { $_ => 1 } grep { $tid_internal_stop{$_} && ($mrgd_tid_to_gene{$_} // "") eq $gid } keys %tid_internal_stop;
+        my %drop;
+        for my $tid (keys %tid_internal_stop) {
+            $drop{$tid} = 1 if $tid_internal_stop{$tid} && ($mrgd_tid_to_gene{$tid} // "") eq $gid;
+        }
         if (%drop) {
-            @block = grep {
-                my @f = split "\t", $_;
-                my %a = @f >= 9 ? parse_attrs($f[8]) : ();
-                !(($f[2] // "") eq "mRNA" && $drop{$a{ID} // ""}) && !$drop{$a{Parent} // ""};
-            } @block;
+            my @kept;
+            for my $line (@block) {
+                my @f = split "\t", $line;
+                my %attr = @f >= 9 ? parse_attrs($f[8]) : ();
+                next if ($f[2] // "") eq "mRNA" && $drop{ $attr{ID} // "" };
+                next if $drop{ $attr{Parent} // "" };
+                push @kept, $line;
+            }
+            @block = @kept;
             @dropped = sort keys %drop;
         }
     }
@@ -662,7 +676,7 @@ for my $gid (@gff_gene_order) {
         $block[0] .= ";transl_result=$res";
         $block[0] .= ";dropped_transcripts_internal_stop=" . join(",", @dropped) if @dropped;
     }
-    print $fh "$_\n" for @block;
+    for my $line (@block) { print $fh "$line\n" }
 }
 close $pfh; close $ffh; close $rfh;
 printf "  Pass GFF:   %s  (%d genes)\n", $pass_gff,   $counts{PASS};

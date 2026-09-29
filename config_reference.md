@@ -88,9 +88,10 @@ The MSA junction scoring keys (`min_junction_score`, `no_msa`, `aligner`, `w_con
 
 | Key | What it controls | Default | Notes |
 |-----|-----------------|---------|-------|
-| `run_miniprot` | Rebuild each merged gene with miniprot in step 6 | `yes` | The merge's tiling reference protein is aligned across the merged locus. SUPPORTED: the placeholder model is replaced (real splice sites, missing exon recovered, start codon completed from the 5' fragment when needed). NOT_SUPPORTED: step 8 fails the merge (`NO_PROTEIN_SPAN`). Congeria negative control: 100/100 false merges NOT_SUPPORTED |
+| `run_miniprot` | Rebuild each merged gene with miniprot in step 6 | `yes` | The merge's tiling reference proteins are aligned across the merged locus, best-ranked first. SUPPORTED: the placeholder model is replaced (real splice sites, missing exon recovered, start codon completed from the 5' fragment when needed). NOT_SUPPORTED: step 8 fails the merge (`NO_PROTEIN_SPAN`). Congeria negative control: 100/100 false merges NOT_SUPPORTED |
 | `flank` | bp added on each side of the merged gene for the miniprot search | `5000` | — |
 | `min_prot_cov` | Minimum fraction of the reference protein the alignment must cover | `0.80` | Also required: no frameshift, no in-frame stop, CDS over every source gene |
+| `max_refs` | How many ranked reference candidates (`ref_candidates`, best first) to try | `10` (all written) | The first SUPPORTED one is used; `miniprot_ref_rank` / `miniprot_refs_tried` record which and how many |
 
 ---
 

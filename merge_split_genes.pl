@@ -140,7 +140,7 @@ use warnings;
 ##                        strongly recommended to add to skip_flags unless IsoSeq confirms
 ##   CLEAN                2+ tiling hits, coverage >= 60%, directly adjacent — no concerns flagged
 ##
-## --isoseq_flag values (for reference, used in isoseq_validated.txt col 20):
+## --isoseq_flag values (for reference, the isoseq_flag column of isoseq_validated.txt):
 ##   FULL_SPAN       at least one read spans all genes — strong confirmation
 ##   PARTIAL_SPAN    reads exist but don't reach a terminal gene — handled by --fix_partial
 ##   NO_SPANNERS     no spanning reads — may reflect expression stage not gene structure
@@ -324,6 +324,7 @@ my $default_date_tag  = strftime("%Y%m%d", localtime);
 my $gene_template     = "MERGE${default_date_tag}g[GCOUNT:6]000";
 my $trans_template    = "MERGE${default_date_tag}t[GCOUNT:6][TCOUNT:3]";
 
+my @argv_orig = @ARGV;   # the command line, before GetOptions consumes it
 GetOptions(
     "flags=s"              => \$flags_opt,
     "skip_flags=s"         => \$skip_flags_opt,
@@ -471,7 +472,7 @@ print STDERR "Starting gene counter at:  ", build_gene_id($gene_tmpl, $gene_coun
 
 # column indices (0-based) for the isoseq_validated.txt
 # works for both old (18-col) and new (20-col) format
-# we key on genes_in_order (col 2) and flag (col 14 old / col 16 new)
+# columns are found by header name (genes_in_order, flag, ...), whatever their position
 # detect format from header
 my ($col_merge_id, $col_genes, $col_flag, $col_tiling, $col_cov,
     $col_isoseq_flag, $col_isoseq_count, $col_isoseq_detail);
@@ -529,7 +530,8 @@ while (my $mline = <MERGE>) {
             $skip = 1;
             # LOW_COV and other non-structural flags represent weak protein evidence;
             # IsoSeq co-transcription does not substitute for missing tiling support.
-            my $is_rescuable = grep { $sf eq $_ } @rescuable_flags;
+            my $is_rescuable = 0;
+            for my $rescuable (@rescuable_flags) { $is_rescuable = 1 if $sf eq $rescuable }
             $skip_rescuable = 0 unless $is_rescuable;
         }
     }
@@ -619,17 +621,11 @@ if ($dry_run) {
 open OUT,     ">$output_file"  or die "cant open output file: $output_file $!\n";
 open REMOVED, ">$removed_file" or die "cant open removed file: $removed_file $!\n";
 # reconstruct the command line for provenance
-my $cmdline = join(" ", $0,
-    ($fix_partial       ? "--fix_partial"                      : ()),
-    ($skip_flags_opt    ? "--skip_flags $skip_flags_opt"       : ()),
-    ($flags_opt ne "all"? "--flags $flags_opt"                 : ()),
-    ($min_tiling > 1    ? "--min_tiling $min_tiling"           : ()),
-    ($min_cov > 0       ? "--min_cov $min_cov"                 : ()),
-    ($require_isoseq    ? "--require_isoseq $require_isoseq"   : ()),
-    ($isoseq_min_span>0 ? "--isoseq_min_spanning $isoseq_min_span" : ()),
-    ($removed_file ne "removed_genes.gff" ? "--removed $removed_file" : ()),
-    $merge_file, $gff_file, $output_file
-);
+# the command as given (it was rebuilt from a subset of the options, which left out
+# --genome_fa, --spanning_rescue and the ID templates, all of which change the output)
+my @cmd_words;
+for my $word ($0, @argv_orig) { push @cmd_words, $word =~ /[\s"'\[\]]/ ? "\"$word\"" : $word }
+my $cmdline = join(" ", @cmd_words);
 
 my $provenance_comment = "# Created by: $cmdline";
 my $date_comment       = "# Date: $date";
@@ -780,7 +776,9 @@ sub parse_attrs {
 
 sub attrs_to_string {
     my @pairs = @_;
-    return join(";", map { my $p = $_; "$p->[0]=$p->[1]" } @pairs);
+    my @kv;
+    for my $p (@pairs) { push @kv, "$p->[0]=$p->[1]" }
+    return join(";", @kv);
 }
 
 # ---------------------------------------------------------------------------
@@ -822,12 +820,21 @@ sub recalc_phases {
     return @result;
 }
 
+# Comparators for sort, named so the code never reads sort's package variables:
+# with the ($$) prototype, sort passes the two elements in @_
+sub gff_field { my ($line, $col) = @_; return (split "\t", $line)[$col] }
+sub by_gff_start($$)    { my ($left, $right) = @_; return gff_field($left, 3) <=> gff_field($right, 3) }
+sub by_gff_end_desc($$) { my ($left, $right) = @_; return gff_field($right, 4) <=> gff_field($left, 4) }
+
+# smallest and largest of a list of numbers
+sub min_of { my $min; for my $value (@_) { $min = $value if !defined $min || $value < $min } return $min }
+sub max_of { my $max; for my $value (@_) { $max = $value if !defined $max || $value > $max } return $max }
+
 # GFF lines in transcription order: ascending start on +, descending end on -
 sub transcription_order {
     my ($lines_ref, $strand) = @_;
-    return $strand eq "-"
-        ? sort { (split "\t", $b)[4] <=> (split "\t", $a)[4] } @$lines_ref
-        : sort { (split "\t", $a)[3] <=> (split "\t", $b)[3] } @$lines_ref;
+    my @ordered = $strand eq "-" ? sort(by_gff_end_desc @$lines_ref) : sort(by_gff_start @$lines_ref);
+    return @ordered;
 }
 
 # ---------------------------------------------------------------------------
@@ -895,11 +902,17 @@ sub trim_cds_3prime {
     my ($feat_lines_ref, $strand, $n) = @_;
     my @lines = @$feat_lines_ref;
     while ($n > 0) {
-        my @cds_idx = grep { (split "\t", $lines[$_])[2] eq "CDS" } 0 .. $#lines;
-        last unless @cds_idx;
-        my $term_idx = $strand eq "-"
-            ? (sort { (split "\t", $lines[$a])[3] <=> (split "\t", $lines[$b])[3] } @cds_idx)[0]
-            : (sort { (split "\t", $lines[$b])[4] <=> (split "\t", $lines[$a])[4] } @cds_idx)[0];
+        # the 3'-most CDS segment: lowest start on -, highest end on + (the first such)
+        my $term_idx;
+        for my $i (0 .. $#lines) {
+            next unless gff_field($lines[$i], 2) eq "CDS";
+            if (!defined $term_idx
+                || ($strand eq "-" ? gff_field($lines[$i], 3) < gff_field($lines[$term_idx], 3)
+                                   : gff_field($lines[$i], 4) > gff_field($lines[$term_idx], 4))) {
+                $term_idx = $i;
+            }
+        }
+        last unless defined $term_idx;
         my @ff  = split "\t", $lines[$term_idx];
         my $len = $ff[4] - $ff[3] + 1;
         if ($len > $n) {
@@ -914,13 +927,23 @@ sub trim_cds_3prime {
     return @lines;
 }
 
+# source transcripts by start, or by end (descending), from their mRNA lines
+sub by_transcript_start($$)    { my ($left, $right) = @_; return gff_field($transcript_line{$left}, 3) <=> gff_field($transcript_line{$right}, 3) }
+sub by_transcript_end_desc($$) { my ($left, $right) = @_; return gff_field($transcript_line{$right}, 4) <=> gff_field($transcript_line{$left}, 4) }
+
+# the CDS lines among a transcript's feature lines
+sub cds_lines_of {
+    my @cds;
+    for my $line (@_) { push @cds, $line if gff_field($line, 2) eq "CDS" }
+    return @cds;
+}
+
 # ---------------------------------------------------------------------------
 # Build merge operations: for each merge group, construct the new gene
 # ---------------------------------------------------------------------------
 my %genes_to_remove;  # gene_id -> 1
 my %no_stop;          # new gene id -> [source transcripts whose CDS did not end in a stop: not trimmed]
 my %frame_break;      # new gene id -> [junctions "upstream>downstream" where the frame breaks]
-my $prev_tid;
 my @new_gene_blocks;  # each element is a list of GFF lines for one new gene
 
 my $n_merged       = 0;
@@ -931,7 +954,8 @@ for my $group (@merge_groups) {
     my $merge_id = $group->{merge_id};
 
     # verify all genes exist in GFF
-    my @missing = grep { !exists $gene_line{$_} } @genes;
+    my @missing;
+    for my $gene (@genes) { push @missing, $gene unless exists $gene_line{$gene} }
     if (@missing) {
         print STDERR "WARNING: genes not found in GFF, skipping merge [",
                      join(",", @genes), "]: missing=", join(",", @missing), "\n";
@@ -939,11 +963,16 @@ for my $group (@merge_groups) {
     }
 
     # verify all genes are on the same strand
-    my @strands = map { (split "\t", $gene_line{$_})[6] } @genes;
-    my %seen_strands = map { $_ => 1 } @strands;
+    my (@strands, %seen_strands, @gene_strand);
+    for my $gene (@genes) {
+        my $gene_strand = gff_field($gene_line{$gene}, 6);
+        push @strands, $gene_strand;
+        push @gene_strand, "$gene($gene_strand)";
+        $seen_strands{$gene_strand} = 1;
+    }
     if (keys %seen_strands > 1) {
         print STDERR "WARNING: mixed-strand chain, skipping merge [$merge_id]: ",
-                     join(",", map { "$genes[$_]($strands[$_])" } 0..$#genes), "\n";
+                     join(",", @gene_strand), "\n";
         next;
     }
 
@@ -953,10 +982,13 @@ for my $group (@merge_groups) {
     my $strand = $gf[6];
 
     # new gene coordinates: min start to max end across all genes
-    my $new_start = (sort { $a <=> $b }
-                     map { (split "\t", $gene_line{$_})[3] } @genes)[0];
-    my $new_end   = (sort { $b <=> $a }
-                     map { (split "\t", $gene_line{$_})[4] } @genes)[0];
+    my (@gene_starts, @gene_ends);
+    for my $gene (@genes) {
+        push @gene_starts, gff_field($gene_line{$gene}, 3);
+        push @gene_ends,   gff_field($gene_line{$gene}, 4);
+    }
+    my $new_start = min_of(@gene_starts);
+    my $new_end   = max_of(@gene_ends);
 
     # assign new gene ID using template
     my $new_gene_id = build_gene_id($gene_tmpl, $gene_counter++);
@@ -979,7 +1011,8 @@ for my $group (@merge_groups) {
         $multi_isoform = 1 if scalar(@{ $gene_transcripts{$g} // [] }) > 1;
     }
     if ($multi_isoform) {
-        my @multi = grep { scalar(@{ $gene_transcripts{$_} // [] }) > 1 } @genes;
+        my @multi;
+        for my $gene (@genes) { push @multi, $gene if scalar(@{ $gene_transcripts{$gene} // [] }) > 1 }
         print STDERR "INFO: MULTI_ISOFORM_JOIN [$merge_id]: cross-product transcripts created; ",
                      "verify isoform structure. Multi-isoform source genes: ",
                      join(",", @multi), "\n";
@@ -1009,11 +1042,7 @@ for my $group (@merge_groups) {
     for my $gene (@genes) {
         my @tids = @{ $gene_transcripts{$gene} // [] };
         # sort transcripts by their start coordinate
-        @tids = sort {
-            (split "\t", $transcript_line{$a})[3]
-            <=>
-            (split "\t", $transcript_line{$b})[3]
-        } @tids;
+        @tids = sort by_transcript_start @tids;
         push @all_source_transcripts, @tids;
     }
 
@@ -1058,12 +1087,13 @@ for my $group (@merge_groups) {
 
         # new transcript GFF line
         # get coords: min start to max end across all source transcripts
-        my $t_start = (sort { $a <=> $b }
-                       map { (split "\t", $transcript_line{$_})[3] }
-                       @source_tids)[0];
-        my $t_end   = (sort { $b <=> $a }
-                       map { (split "\t", $transcript_line{$_})[4] }
-                       @source_tids)[0];
+        my (@tx_starts, @tx_ends);
+        for my $tid (@source_tids) {
+            push @tx_starts, gff_field($transcript_line{$tid}, 3);
+            push @tx_ends,   gff_field($transcript_line{$tid}, 4);
+        }
+        my $t_start = min_of(@tx_starts);
+        my $t_end   = max_of(@tx_ends);
 
         my $t_attrs = join(";",
             "ID=$new_tid",
@@ -1088,14 +1118,8 @@ for my $group (@merge_groups) {
         # split) annotation, left over from when it was still an independent
         # gene call, and must be trimmed from its terminal CDS before pooling
         # -- otherwise the merged CDS translates through an internal stop.
-        my $final_tid;
-        if ($strand eq "+") {
-            $final_tid = (sort { (split "\t", $transcript_line{$b})[4]
-                             <=> (split "\t", $transcript_line{$a})[4] } @source_tids)[0];
-        } else {
-            $final_tid = (sort { (split "\t", $transcript_line{$a})[3]
-                             <=> (split "\t", $transcript_line{$b})[3] } @source_tids)[0];
-        }
+        my @by_3prime = $strand eq "+" ? sort(by_transcript_end_desc @source_tids) : sort(by_transcript_start @source_tids);
+        my $final_tid = $by_3prime[0];
 
         # collect sub-features by type from all source transcripts
         my %by_type;       # type -> [lines]
@@ -1107,7 +1131,7 @@ for my $group (@merge_groups) {
                 # remove this fragment's native stop codon from the 3' end of its
                 # CDS so it is not translated as an internal stop once pooled with
                 # the next fragment -- only if it is a stop, when the genome is known
-                my @cds_lines = grep { (split "\t", $_)[2] eq "CDS" } @feat_lines;
+                my @cds_lines = cds_lines_of(@feat_lines);
                 if (@cds_lines) {
                     my $trim = 1;
                     if ($genome_fa) {
@@ -1118,7 +1142,7 @@ for my $group (@merge_groups) {
                     @feat_lines = trim_cds_3prime(\@feat_lines, $strand, 3) if $trim;
                 }
             }
-            $fragment_cds{$tid} = [ grep { (split "\t", $_)[2] eq "CDS" } @feat_lines ];
+            $fragment_cds{$tid} = [ cds_lines_of(@feat_lines) ];
 
             for my $feat_line (@feat_lines) {
                 my @ff = split "\t", $feat_line;
@@ -1129,12 +1153,12 @@ for my $group (@merge_groups) {
         # reading frame across junctions, in transcription order: after each
         # fragment, the next one must start on its own codon boundary (its own
         # first-CDS phase), or the downstream part translates out of frame
-        my @tx_tids = grep { @{ $fragment_cds{$_} } } @source_tids;
-        @tx_tids = $strand eq "-"
-            ? sort { (split "\t", $transcript_line{$b})[4] <=> (split "\t", $transcript_line{$a})[4] } @tx_tids
-            : sort { (split "\t", $transcript_line{$a})[3] <=> (split "\t", $transcript_line{$b})[3] } @tx_tids;
+        my @tx_tids;
+        for my $tid (@source_tids) { push @tx_tids, $tid if @{ $fragment_cds{$tid} } }
+        @tx_tids = $strand eq "-" ? sort(by_transcript_end_desc @tx_tids) : sort(by_transcript_start @tx_tids);
         my @frame_breaks;
         my $coding = undef;   # coding bases so far, counted from the first codon
+        my $prev_tid;
         for my $tid (@tx_tids) {
             my @cds = transcription_order($fragment_cds{$tid}, $strand);
             my $phase = (split "\t", $cds[0])[7];
@@ -1145,7 +1169,7 @@ for my $group (@merge_groups) {
             } else {
                 $coding = -$phase;
             }
-            $coding += $_->[4] - $_->[3] + 1 for map { [split "\t", $_] } @cds;
+            for my $cds_line (@cds) { $coding += gff_field($cds_line, 4) - gff_field($cds_line, 3) + 1 }
             $prev_tid = $tid;
         }
         if (@frame_breaks) {
@@ -1166,9 +1190,11 @@ for my $group (@merge_groups) {
         my ($min_cds, $max_cds);
         my @cds_ivs;  # [ [start, end], ... ]
         if (@all_cds) {
-            @cds_ivs    = map { [(split "\t", $_)[3, 4]] } @all_cds;
-            $min_cds = (sort { $a <=> $b } map { $_->[0] } @cds_ivs)[0];
-            $max_cds = (sort { $b <=> $a } map { $_->[1] } @cds_ivs)[0];
+            for my $cds_line (@all_cds) { push @cds_ivs, [ gff_field($cds_line, 3), gff_field($cds_line, 4) ] }
+            my (@iv_starts, @iv_ends);
+            for my $iv (@cds_ivs) { push @iv_starts, $iv->[0]; push @iv_ends, $iv->[1] }
+            $min_cds = min_of(@iv_starts);
+            $max_cds = max_of(@iv_ends);
         }
 
         # process in a defined order
@@ -1191,15 +1217,18 @@ for my $group (@merge_groups) {
                     my @ff = split "\t", $exon_line;
                     my ($ex_s, $ex_e) = @ff[3, 4];
 
-                    my @olap = grep { $_->[0] <= $ex_e && $_->[1] >= $ex_s } @cds_ivs;
+                    my @olap;
+                    for my $iv (@cds_ivs) { push @olap, $iv if $iv->[0] <= $ex_e && $iv->[1] >= $ex_s }
 
                     if (!@olap) {
                         # no CDS overlap: drop if internal
                         next if $ex_s > $min_cds && $ex_e < $max_cds;
                     } else {
                         # has CDS overlap: clip any inward UTR extension
-                        my $min_olap = (sort { $a <=> $b } map { $_->[0] } @olap)[0];
-                        my $max_olap = (sort { $b <=> $a } map { $_->[1] } @olap)[0];
+                        my (@olap_starts, @olap_ends);
+                        for my $iv (@olap) { push @olap_starts, $iv->[0]; push @olap_ends, $iv->[1] }
+                        my $min_olap = min_of(@olap_starts);
+                        my $max_olap = max_of(@olap_ends);
                         $ff[3] = $min_olap if $ex_s < $min_olap && $ex_s > $min_cds;
                         $ff[4] = $max_olap if $ex_e > $max_olap && $ex_e < $max_cds;
                         $exon_line = join "\t", @ff;
@@ -1215,17 +1244,17 @@ for my $group (@merge_groups) {
             # source GFF carried are also cleaned up by the same rule.
             if (($ftype eq "five_prime_UTR" || $ftype eq "three_prime_UTR")
                     && defined $min_cds && defined $max_cds) {
-                @feats = grep {
-                    my ($us, $ue) = (split "\t", $_)[3, 4];
-                    not ($us > $min_cds && $ue < $max_cds);
-                } @feats;
+                my @outer;
+                for my $utr_line (@feats) {
+                    my ($us, $ue) = (split "\t", $utr_line)[3, 4];
+                    push @outer, $utr_line unless $us > $min_cds && $ue < $max_cds;
+                }
+                @feats = @outer;
                 next unless @feats;
             }
 
             # sort by start coordinate ascending
-            @feats = sort {
-                (split "\t", $a)[3] <=> (split "\t", $b)[3]
-            } @feats;
+            @feats = sort by_gff_start @feats;
 
             # recalculate CDS phases after joining
             if ($ftype eq "CDS") {
@@ -1246,10 +1275,8 @@ for my $group (@merge_groups) {
 
         # handle any other feature types not in the list above
         for my $ftype (sort keys %by_type) {
-            next if grep { $_ eq $ftype } qw(exon CDS five_prime_UTR three_prime_UTR);
-            my @feats = sort {
-                (split "\t", $a)[3] <=> (split "\t", $b)[3]
-            } @{ $by_type{$ftype} };
+            next if $ftype =~ /^(?:exon|CDS|five_prime_UTR|three_prime_UTR)$/;
+            my @feats = sort by_gff_start @{ $by_type{$ftype} };
             $type_counter{$ftype} = 0;
             for my $fl (@feats) {
                 $type_counter{$ftype}++;
@@ -1286,22 +1313,24 @@ for my $group (@merge_groups) {
 my %first_gene_of_merge;  # gene_id -> new_gene_block index
 my %new_block_by_first;   # first_gene_id -> block
 {
-    my $block_idx = 0;
+    # position of each gene in @gff_order (built once; it was rebuilt per block)
+    my %rank;
+    for my $i (0 .. $#gff_order) {
+        my $entry = $gff_order[$i];
+        $rank{ $entry->[1] } = $i if defined $entry->[1] && !exists $rank{ $entry->[1] };
+    }
     for my $block (@new_gene_blocks) {
         # extract merged_from from the gene line (first element of block)
         my ($merged_from) = $block->[0] =~ /merged_from=([^;]+)/;
         next unless defined $merged_from;
-        my @source_genes = split /,/, $merged_from;
-        # find which source gene appears first in @gff_order
-        my %rank;
-        for my $i (0 .. $#gff_order) {
-            my $entry = $gff_order[$i];
-            $rank{ $entry->[1] } = $i if defined $entry->[1];
+        # the source gene appearing first in @gff_order (every source gene is in it:
+        # merges with a missing gene were skipped above)
+        my $first;
+        for my $gene (split /,/, $merged_from) {
+            next unless defined $rank{$gene};
+            $first = $gene if !defined $first || $rank{$gene} < $rank{$first};
         }
-        my $first = (sort { ($rank{$a}//9999) <=> ($rank{$b}//9999) }
-                     @source_genes)[0];
-        $new_block_by_first{$first} = $block;
-        $block_idx++;
+        $new_block_by_first{$first} = $block if defined $first;
     }
 }
 

@@ -396,13 +396,17 @@ run_agat = yes
 ## ============================================================
 [miniprot]
 ##
-## Step 6 rebuilds each merged gene from protein evidence: the reference protein
-## the fragments tiled against (best_hit) is aligned across the merged locus with
-## miniprot (spliced protein-to-genome alignment). SUPPORTED (the alignment covers
+## Step 6 rebuilds each merged gene from protein evidence: a reference protein
+## the fragments tiled against is aligned across the merged locus with miniprot
+## (spliced protein-to-genome alignment). The candidates are the merge's
+## ref_candidates (step 4 ranks them: most fragments hit, then identity-weighted
+## coverage, so a close reference comes first), tried in order until one is
+## SUPPORTED; a distant reference often makes spurious frameshifts. SUPPORTED (the alignment covers
 ## >= min_prot_cov of the protein and every source fragment, with no frameshift and
 ## no in-frame stop): the placeholder model is replaced by the miniprot model --
 ## real splice sites, a missing exon at the break recovered; when miniprot's model
-## does not reach a start codon, the 5' fragment's own start completes it. NOT_SUPPORTED:
+## does not reach a start codon, the 5' fragment's own start completes it (and the 3'
+## fragment's own stop codon, at the other end). NOT_SUPPORTED by every candidate:
 ## the placeholder is kept and step 8 fails the merge (NO_PROTEIN_SPAN).
 ## Placeholder models are kept in merges.placeholder.gff; per-merge results in
 ## miniprot.tsv. Requires miniprot and samtools, and a samtools faidx index of genome_fa.
@@ -416,6 +420,13 @@ flank = 5000
 ## min_prot_cov: minimum fraction of the reference protein the alignment must cover.
 ## Default: 0.80.
 min_prot_cov = 0.80
+
+## max_refs: how many of the ranked reference candidates to try. Every candidate tiles
+## the fragments, and SUPPORTED still needs one alignment over every fragment, so trying
+## more does not let a false merge through (Congeria negative control). The candidates are
+## often several isoforms of one reference gene, so a small value can stop before a
+## different isoform or gene is tried. Default: 10 (all the candidates step 4 writes).
+max_refs = 10
 
 ## ============================================================
 [paths]
