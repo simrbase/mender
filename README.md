@@ -386,7 +386,12 @@ genomic order on the reference: on the + strand the upstream gene must align to 
 N-terminal part, on the − strand to the C-terminal part. A fragment hit must also cover
 at least `frag_min_qcov` (default 60%) of the query protein itself — a split fragment is
 a piece of the reference protein, while a multidomain protein aligning over one shared
-domain is not.
+domain is not. A piece can also carry sequence the reference lacks (a mispredicted exon, an
+extension), so the filter can drop real splits: on Chamaeleo CCA3, 134 merges the July run
+kept were lost at 60. Lowering it lets such pieces tile; the rebuild and step 8 still judge the
+merge. The rebuild's candidate list then ranks first the references that every piece aligns
+over at least `ref_min_qcov` (default 60%) of itself, so a protein that shares only a domain
+with a piece (often the closest by identity) does not give the rebuilt model its shape.
 
 **Fusion versus mis-split.** Protein tiling cannot tell an annotation that split one gene
 from a genuine gene fission: if the reference lineage *fused* two genes that are separate

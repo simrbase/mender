@@ -31,10 +31,18 @@ use Getopt::Long qw(GetOptions);
 ##                                  [--large_span_extreme N] \
 ##                                  [--max_dist N] [--wiggle N] [--asym_threshold N] \
 ##                                  [--low_cov_thresh N] [--max_evalue E] \
-##                                  [--frag_min_qcov N] [--end_tol N] \
+##                                  [--frag_min_qcov N] [--ref_min_qcov N] [--end_tol N] \
 ##                                  [--overlap_min_frac F] [--overlap_min_qcov N] \
 ##                                  diamond.out genes.gff subject.fa query.fa
 ##
+##   --frag_min_qcov N     a fragment hit must align over >= N% of the piece itself
+##                         (default 60); lower it to let pieces with sequence the
+##                         reference lacks tile (0 = off)
+##   --ref_min_qcov N      rebuild_candidates: references every chain gene aligns over
+##                         >= N% of itself rank before the others (default 60). With a
+##                         lower frag_min_qcov, references that share only a domain with
+##                         a piece would otherwise rank first on identity and give the
+##                         rebuild a domain protein's shape
 ##   --overlap_min_frac F  PIECES_OVERLAP: two pieces' alignments on one reference
 ##                         overlap by >= F of the shorter alignment (default 0.5)
 ##   --overlap_min_qcov N  PIECES_OVERLAP: each piece aligns over >= N% of itself
@@ -563,6 +571,7 @@ my $asym_threshold =  6;  # min hits on strong side to trigger trim/split
 my $low_cov_thresh = 60;  # tiling_cov_pct below this gets LOW_COV flag
 my $max_evalue     = 1e-20;  # a fragment hit must have evalue <= this
 my $frag_min_qcov  = 60;  # a fragment must align over >= this % of ITSELF (qcovhsp)
+my $ref_min_qcov   = 60;  # rebuild_candidates: references all chain genes align over >= this % of themselves first
 my $end_tol        = 30;  # aa a fragment may extend past its alignment at the junction side
 my $overlap_min_frac = 0.5;  # PIECES_OVERLAP: overlap >= this fraction of the shorter alignment
 my $overlap_min_qcov = 60;   # PIECES_OVERLAP: each piece aligns over >= this % of ITSELF there
@@ -577,6 +586,7 @@ GetOptions(
     "low_cov_thresh=f"     => \$low_cov_thresh,
     "max_evalue=f"         => \$max_evalue,
     "frag_min_qcov=f"      => \$frag_min_qcov,
+    "ref_min_qcov=f"       => \$ref_min_qcov,
     "end_tol=i"            => \$end_tol,
     "overlap_min_frac=f"   => \$overlap_min_frac,
     "overlap_min_qcov=f"   => \$overlap_min_qcov,
@@ -585,7 +595,7 @@ GetOptions(
 sub usage_text {
     return "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] " .
            "[--max_dist N] [--wiggle N] [--asym_threshold N] [--low_cov_thresh N] " .
-           "[--max_evalue E] [--frag_min_qcov N] [--end_tol N] " .
+           "[--max_evalue E] [--frag_min_qcov N] [--ref_min_qcov N] [--end_tol N] " .
            "[--overlap_min_frac F] [--overlap_min_qcov N] blast gff subject_fa query_fa\n";
 }
 my $usage_str = usage_text();
@@ -822,6 +832,7 @@ while (my $line = <BLAST>){
             $subjects{$subject}{$gene_id}{qend}   = $qend;
             $subjects{$subject}{$gene_id}{qlen}   = $qlen;
             $subjects{$subject}{$gene_id}{pident} = $per_identity;
+            $subjects{$subject}{$gene_id}{qcov}   = $qcovhsp;
         }
         $gene_hits{$gene_id}{$subject} = 1;
     }
@@ -1222,6 +1233,9 @@ sub refine_chain {
 # (rebuild_candidates) is what rebuild_with_miniprot.pl tries, in order, to
 # rebuild the merged gene.
 #   1. most chain genes hit (the evidence that joins them)
+#   1b. every one of those genes aligns over >= ref_min_qcov of ITSELF (a
+#      reference that shares only a domain with a piece ranks after the ones the
+#      pieces align to as a whole; matters when frag_min_qcov is lower)
 #   2. identity-weighted coverage: the fraction of the reference's residues
 #      aligned identically by the chain's fragments, sum(pident * aligned span)
 #      / reference length. A close reference scores higher than a distant one
@@ -1248,6 +1262,7 @@ sub identity_weighted_cov {
 sub by_reference_rank($$) {
     my ($left, $right) = @_;
     return $right->{n} <=> $left->{n}
+        || $right->{whole} <=> $left->{whole}
         || $right->{id_cov} <=> $left->{id_cov}
         || $right->{has_desc} <=> $left->{has_desc}
         || $left->{hit} cmp $right->{hit};
@@ -1272,7 +1287,12 @@ sub rank_chain_references {
         }
         next unless @with_hit > 1;
         my $has_desc = ($desc{$hit} // "") =~ /[\s\|]/ ? 1 : 0;
-        push @ranked, { hit => $hit, n => scalar @with_hit, has_desc => $has_desc,
+        my $whole = 1;
+        for my $gene (@with_hit) {
+            my $qcov = $subjects{$hit}{$gene}{qcov};
+            $whole = 0 if defined $qcov && $qcov ne "" && $qcov < $ref_min_qcov;
+        }
+        push @ranked, { hit => $hit, n => scalar @with_hit, has_desc => $has_desc, whole => $whole,
                         id_cov => identity_weighted_cov($hit, @with_hit) };
     }
     @ranked = sort by_reference_rank @ranked;

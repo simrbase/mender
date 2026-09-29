@@ -29,6 +29,10 @@ use FindBin;
 #       on the same residues (tandem copies) -> PIECES_OVERLAP, overlap_ref = that reference
 #   F10 two pieces overlap on a reference only through a shared domain (each aligns 41% of
 #       itself there) -> no PIECES_OVERLAP
+#   F11 --frag_min_qcov 0: w1 w2 tile on REFW (each piece aligned as a whole, 60% identity) and
+#       on REFD, a closer protein they share only a domain with (40% of each piece, 95%
+#       identity). REFW still ranks first in rebuild_candidates (--ref_min_qcov 60); at the
+#       default frag_min_qcov REFD is not a candidate at all
 
 my $dir = tempdir(CLEANUP => 1);
 my ($passed, $failed) = (0, 0);
@@ -233,12 +237,14 @@ $gene->('chr5', 'o1', 1000, 2000, '+'); $gene->('chr5', 'o2', 3000, 4000, '+');
 $gene->('chr7', 'i1', 1000, 2000, '+'); $gene->('chr7', 'i2', 3000, 4000, '+');
 $gene->('chr8', 'c1', 1000, 2000, '+'); $gene->('chr8', 'c2', 3000, 4000, '+');
 $gene->('chr9', 's1', 1000, 2000, '+'); $gene->('chr9', 's2', 3000, 4000, '+');
+$gene->('chr10', 'w1', 1000, 2000, '+'); $gene->('chr10', 'w2', 3000, 4000, '+');
 write_file("$dir/f.gff", join("\n", @fgff) . "\n");
 # subject: REF (500 aa) and REF2, a second reference with the same tiling (a tie in coverage)
 write_file("$dir/subject.fa", ">REF gene:ENSG1 gene_symbol:REF1 description:reference one\nM\n>REF2 gene:ENSG2 gene_symbol:REF2 description:reference two\nM\n"
   . ">REFC gene:ENSG3 gene_symbol:REFC description:reference close\nM\n"
-  . ">FUSED description:two units\nM\n>SINGLE description:one unit\nM\n>DOM description:domain protein\nM\n");
-my @ids = qw(g1 g2 g3 g4 h1 h2 d1 d2 k1 k2 L o1 o2 i1 i2 c1 c2 s1 s2);
+  . ">FUSED description:two units\nM\n>SINGLE description:one unit\nM\n>DOM description:domain protein\nM\n"
+  . ">REFW description:whole-piece reference\nM\n>REFD description:shares a domain\nM\n");
+my @ids = qw(g1 g2 g3 g4 h1 h2 d1 d2 k1 k2 L o1 o2 i1 i2 c1 c2 s1 s2 w1 w2);
 my $query_fa = '';
 for my $id (@ids) { $query_fa .= ">$id.t desc $id\nM\n" }
 write_file("$dir/query.fa", $query_fa);
@@ -261,6 +267,8 @@ my $blast = join('',
   $row->('c1', 'SINGLE', 1, 245, 1, 245, 245, 80, 250), $row->('c2', 'SINGLE', 3, 248, 5, 250, 255, 80, 250),   # F9 same residues (98%)
   $row->('s1', 'REF', 1, 240, 1, 240, 245), $row->('s2', 'REF', 245, 495, 1, 251, 255),     # F10 tile on REF
   $row->('s1', 'DOM', 100, 200, 1, 101, 245), $row->('s2', 'DOM', 100, 200, 1, 105, 255),   # F10 shared domain, 41% of each piece
+  $row->('w1', 'REFW', 1, 240, 1, 240, 245, 60), $row->('w2', 'REFW', 245, 495, 1, 251, 255, 60),   # F11 whole pieces
+  $row->('w1', 'REFD', 1, 95, 1, 98, 245, 95, 200), $row->('w2', 'REFD', 100, 195, 1, 102, 255, 95, 200),   # F11 domain only (40%)
 );
 write_file("$dir/blast.tsv", $blast);
 my $find = "$FindBin::Bin/../find_split_genes.pl";
@@ -323,6 +331,22 @@ check(@$s_row && ($s_row->[ $mcol{flag} ] // '') !~ /PIECES_OVERLAP/ && $s_overl
 my $g_overlap = $cand{'g1,g2'}[ $mcol{overlap_ref} ] // '';
 chomp $g_overlap;
 check($g_overlap eq '.', 'F1: a plain split has overlap_ref "."', $g_overlap);
+
+# F11: frag_min_qcov 0 lets the domain-only reference in; it must not rank first
+my $w_default = $cand{'w1,w2'} // [];
+my $w_default_cands = $w_default->[ $mcol{rebuild_candidates} ] // '';
+check($w_default_cands eq 'REFW', 'F11: at the default frag_min_qcov only the whole-piece reference is a candidate', $w_default_cands);
+my $q0_dir = "$dir/find_q0";
+mkdir $q0_dir;
+check(system("cd \Q$q0_dir\E && perl \Q$find\E --frag_min_qcov 0 ../blast.tsv ../f.gff ../subject.fa ../query.fa > find.log 2>&1") == 0,
+      'F11: find_split_genes.pl --frag_min_qcov 0 runs', `tail -3 \Q$q0_dir/find.log\E`);
+my %cand_q0;
+open my $mq, '<', "$q0_dir/split_genes_merge.txt" or die;
+<$mq>;
+while (my $line = <$mq>) { chomp $line; my @f = split /\t/, $line; $cand_q0{$f[2]} = \@f; }
+close $mq;
+my $w_q0_cands = $cand_q0{'w1,w2'} ? $cand_q0{'w1,w2'}[ $mcol{rebuild_candidates} ] : 'no candidate';
+check($w_q0_cands eq 'REFW,REFD', 'F11: with frag_min_qcov 0, REFD is a candidate but ranks after the whole-piece REFW', $w_q0_cands);
 
 print $failed ? "\n$failed FAILED, $passed passed\n" : "all $passed checks passed\n";
 exit($failed ? 1 : 0);

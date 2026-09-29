@@ -148,6 +148,7 @@ my $wiggle             = cfg("merge_filters", "wiggle",             "15");
 my $asym_threshold     = cfg("merge_filters", "asym_threshold",     "6");
 my $low_cov_thresh     = cfg("merge_filters", "low_cov_thresh",     "60");
 my $frag_min_qcov      = cfg("merge_filters", "frag_min_qcov",      "60");
+my $ref_min_qcov       = cfg("merge_filters", "ref_min_qcov",       "60");
 my $end_tol            = cfg("merge_filters", "end_tol",            "30");
 my $overlap_min_frac   = cfg("merge_filters", "overlap_min_frac",   "0.5");
 my $overlap_min_qcov   = cfg("merge_filters", "overlap_min_qcov",   "60");
@@ -230,6 +231,7 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
         asym_threshold       => $asym_threshold,
         low_cov_thresh       => $low_cov_thresh,
         frag_min_qcov        => $frag_min_qcov,
+        ref_min_qcov         => $ref_min_qcov,
         end_tol              => $end_tol,
         overlap_min_qcov     => $overlap_min_qcov,
         isoseq_min_spanning  => $isoseq_min_span,
@@ -668,7 +670,7 @@ if ($run_steps{4}) {
         ($wiggle           ? "--wiggle $wiggle "                          : "") .
         ($asym_threshold   ? "--asym_threshold $asym_threshold "         : "") .
         ($low_cov_thresh   ? "--low_cov_thresh $low_cov_thresh "         : "") .
-        "--frag_min_qcov $frag_min_qcov --end_tol $end_tol --max_evalue $evalue " .
+        "--frag_min_qcov $frag_min_qcov --ref_min_qcov $ref_min_qcov --end_tol $end_tol --max_evalue $evalue " .
         "--overlap_min_frac $overlap_min_frac --overlap_min_qcov $overlap_min_qcov " .
         "$diamond_out " .
         "$gff " .
@@ -1170,6 +1172,7 @@ if ($run_steps{10}) {
     $r->("  asym_threshold:             ${asym_threshold}");
     $r->("  low_cov_thresh:             ${low_cov_thresh}%");
     $r->("  frag_min_qcov:              ${frag_min_qcov}%");
+    $r->("  ref_min_qcov:               ${ref_min_qcov}%");
     $r->("  end_tol:                    ${end_tol} aa");
     $r->("  overlap_min_frac:           ${overlap_min_frac}");
     $r->("  overlap_min_qcov:           ${overlap_min_qcov}%");
