@@ -346,11 +346,13 @@ low_cov_thresh = 60
 # frag_min_qcov: a fragment hit must align over at least this % of the query
 # protein itself (qcovhsp). A split fragment is a piece of the reference protein
 # and aligns over most of itself; a long multidomain protein aligning over one
-# shared domain does not. Default 60. A piece carrying sequence the reference lacks
-# (a mispredicted exon, an extension) also falls below it, so real splits can be lost;
-# lower it (30, or 0 = off) to let them tile -- the miniprot rebuild and step 8 still
-# judge each merge.
-frag_min_qcov = 60
+# shared domain does not. Default 30. A piece carrying sequence the reference lacks
+# (a mispredicted exon, an extension) aligns over less of itself, and the old default
+# of 60 lost real splits (Chamaeleo CCA3: 114 kept merges more at 30, Congeria 24, with
+# 9 and 3 lost to chains grouping differently); the miniprot rebuild and step 8 judge
+# each merge, and ref_min_qcov keeps domain-only references from shaping the rebuild.
+# 0 = off (a few more merges: Chamaeleo +24, Congeria +10).
+frag_min_qcov = 30
 
 # ref_min_qcov: in the rebuild's candidate list (rebuild_candidates), references that
 # every chain gene aligns over at least this % of itself rank before the others. With

@@ -36,8 +36,9 @@ use Getopt::Long qw(GetOptions);
 ##                                  diamond.out genes.gff subject.fa query.fa
 ##
 ##   --frag_min_qcov N     a fragment hit must align over >= N% of the piece itself
-##                         (default 60); lower it to let pieces with sequence the
-##                         reference lacks tile (0 = off)
+##                         (default 30; 0 = off). 60 was the old default: it also drops
+##                         real splits whose piece carries sequence the reference lacks
+##                         (Chamaeleo: 114 merges more at 30, Congeria 24; see README)
 ##   --ref_min_qcov N      rebuild_candidates: references every chain gene aligns over
 ##                         >= N% of itself rank before the others (default 60). With a
 ##                         lower frag_min_qcov, references that share only a domain with
@@ -570,7 +571,7 @@ my $max_dist       =  4;  # max genomic rank distance between gene pair
 my $asym_threshold =  6;  # min hits on strong side to trigger trim/split
 my $low_cov_thresh = 60;  # tiling_cov_pct below this gets LOW_COV flag
 my $max_evalue     = 1e-20;  # a fragment hit must have evalue <= this
-my $frag_min_qcov  = 60;  # a fragment must align over >= this % of ITSELF (qcovhsp)
+my $frag_min_qcov  = 30;  # a fragment must align over >= this % of ITSELF (qcovhsp)
 my $ref_min_qcov   = 60;  # rebuild_candidates: references all chain genes align over >= this % of themselves first
 my $end_tol        = 30;  # aa a fragment may extend past its alignment at the junction side
 my $overlap_min_frac = 0.5;  # PIECES_OVERLAP: overlap >= this fraction of the shorter alignment

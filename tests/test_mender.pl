@@ -19,7 +19,7 @@ use FindBin;
 #   F1  + strand, g1 N-terminal / g2 C-terminal -> a merge candidate
 #   F2  + strand, pieces in the wrong order on the reference -> not a candidate
 #   F3  - strand, the upstream gene is the C-terminal piece -> a candidate
-#   F4  a "fragment" aligning over only 30% of itself (domain sharing) -> not a candidate
+#   F4  a "fragment" aligning over only 20% of itself (domain sharing) -> not a candidate (default 30)
 #   F5  20 genes inside a long gene are excluded from the rank (a 10-gene look-back missed them)
 #   F6  identical output under two Perl hash seeds (ties never depend on hash order)
 #   F7  a piece extending 40 aa past its alignment at the junction -> JUNCTION_OVERHANG
@@ -30,7 +30,7 @@ use FindBin;
 #   F10 two pieces overlap on a reference only through a shared domain (each aligns 41% of
 #       itself there) -> no PIECES_OVERLAP
 #   F11 --frag_min_qcov 0: w1 w2 tile on REFW (each piece aligned as a whole, 60% identity) and
-#       on REFD, a closer protein they share only a domain with (40% of each piece, 95%
+#       on REFD, a closer protein they share only a domain with (25% of each piece, 95%
 #       identity). REFW still ranks first in rebuild_candidates (--ref_min_qcov 60); at the
 #       default frag_min_qcov REFD is not a candidate at all
 
@@ -258,7 +258,7 @@ my $blast = join('',
   $row->('g1', 'REF2', 1, 240, 1, 240, 245), $row->('g2', 'REF2', 245, 495, 1, 251, 255),   # F1: a second, tied reference
   $row->('g3', 'REF', 245, 495, 1, 251, 255), $row->('g4', 'REF', 1, 240, 1, 240, 245),   # F2 wrong order
   $row->('h1', 'REF', 245, 495, 1, 251, 255), $row->('h2', 'REF', 1, 240, 1, 240, 245),   # F3 - strand: h1 (upstream) C-terminal
-  $row->('d1', 'REF', 1, 240, 1, 240, 800), $row->('d2', 'REF', 245, 495, 1, 251, 850),   # F4 qcov 30%
+  $row->('d1', 'REF', 1, 240, 1, 240, 1200), $row->('d2', 'REF', 245, 495, 1, 251, 1255),   # F4 qcov 20%
   $row->('k1', 'REF', 1, 240, 1, 240, 245), $row->('k2', 'REF', 245, 495, 1, 251, 255),   # F5 around L
   $row->('o1', 'REF', 1, 240, 1, 240, 285), $row->('o2', 'REF', 245, 495, 1, 251, 255),   # F7 o1: 45 aa past its alignment
   $row->('i1', 'REF', 1, 240, 1, 240, 245), $row->('i2', 'REF', 245, 495, 1, 251, 255),   # F8 distant reference (50%)
@@ -268,7 +268,7 @@ my $blast = join('',
   $row->('s1', 'REF', 1, 240, 1, 240, 245), $row->('s2', 'REF', 245, 495, 1, 251, 255),     # F10 tile on REF
   $row->('s1', 'DOM', 100, 200, 1, 101, 245), $row->('s2', 'DOM', 100, 200, 1, 105, 255),   # F10 shared domain, 41% of each piece
   $row->('w1', 'REFW', 1, 240, 1, 240, 245, 60), $row->('w2', 'REFW', 245, 495, 1, 251, 255, 60),   # F11 whole pieces
-  $row->('w1', 'REFD', 1, 95, 1, 98, 245, 95, 200), $row->('w2', 'REFD', 100, 195, 1, 102, 255, 95, 200),   # F11 domain only (40%)
+  $row->('w1', 'REFD', 1, 95, 1, 62, 245, 95, 200), $row->('w2', 'REFD', 100, 195, 1, 64, 255, 95, 200),   # F11 domain only (25%)
 );
 write_file("$dir/blast.tsv", $blast);
 my $find = "$FindBin::Bin/../find_split_genes.pl";
@@ -289,7 +289,7 @@ close $m;
 check(exists $cand{'g1,g2'}, 'F1: + strand, N-terminal then C-terminal piece -> a candidate', join(' ', sort keys %cand));
 check(!exists $cand{'g3,g4'}, 'F2: + strand, pieces in the wrong order on the reference -> not a candidate');
 check(exists $cand{'h1,h2'}, 'F3: - strand, upstream gene is the C-terminal piece -> a candidate');
-check(!exists $cand{'d1,d2'}, 'F4: pieces aligning over 30% of themselves (domain sharing) -> not a candidate');
+check(!exists $cand{'d1,d2'}, 'F4: pieces aligning over 20% of themselves (domain sharing) -> not a candidate');
 check(exists $cand{'k1,k2'} && ($cand{'k1,k2'}[12] // '') eq '2',
       'F5: 20 genes inside the long gene L are excluded from the rank: k1 .. L .. k2 is dist 2, not 22',
       $cand{'k1,k2'} ? "dist $cand{'k1,k2'}[12]" : 'no candidate');
