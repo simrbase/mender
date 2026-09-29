@@ -482,25 +482,28 @@ print "=" x 60, "\n";
     my @missing;
     my @checks;  # [tool_bin, label, condition]
 
-    # diamond: always needed (step 2, step 8 db reuse)
-    push @checks, [$diamond_bin,  "diamond",  1];
+    # each tool is checked only when a step that uses it is being run (--steps), so a
+    # rerun of, say, steps 8 and 10 does not need bedtools or miniprot loaded
 
-    # bedtools: only if IsoSeq GFF is set (step 3)
-    push @checks, [$bedtools_bin, "bedtools", !!$isoseq_gff];
+    # diamond: step 2 (search) and step 8 (merged proteins vs the reference)
+    push @checks, [$diamond_bin,  "diamond",  $run_steps{2} || $run_steps{8}];
 
-    # gt: only if run_gt = yes (step 7)
-    push @checks, [$gt_bin,       "gt",       $run_gt  !~ /^no$/i];
+    # bedtools: step 3 (IsoSeq overlaps), only if an IsoSeq GFF is set
+    push @checks, [$bedtools_bin, "bedtools", $isoseq_gff && $run_steps{3}];
 
-    # gffread: needed for translation validation (step 8) or gene set export (step 10)
-    push @checks, [$gffread_bin,  "gffread",  $run_transl_val !~ /^no$/i || $run_steps{10}];
+    # gt: step 7, only if run_gt = yes
+    push @checks, [$gt_bin,       "gt",       $run_gt !~ /^no$/i && $run_steps{7}];
+
+    # gffread: translation validation (step 8) and gene set export (step 10)
+    push @checks, [$gffread_bin,  "gffread",  $run_steps{8} || $run_steps{10}];
 
     # miniprot + samtools: the rebuild of merged genes in step 6 (run_miniprot = yes)
     my $need_mp = $run_miniprot !~ /^no$/i && $run_steps{6};
     push @checks, [$miniprot_bin, "miniprot", $need_mp];
     push @checks, [$samtools_bin, "samtools", $need_mp];
 
-    # agat: only if run_agat = yes (step 9)
-    push @checks, [$agat_bin,     "agat",     $run_agat !~ /^no$/i];
+    # agat: step 9, only if run_agat = yes
+    push @checks, [$agat_bin,     "agat",     $run_agat !~ /^no$/i && $run_steps{9}];
 
     print "\n--- Tool preflight check ---\n";
     for my $c (@checks) {
