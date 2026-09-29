@@ -10,7 +10,9 @@ use warnings;
 ##
 ##   A  Parse merged GFF — collect new gene IDs, source gene lists, GFF blocks,
 ##      and the miniprot result recorded on each gene
-##   C  Translate merged proteins (gffread -y); pick representative per gene
+##   C  Translate merged proteins (gffread -y); pick representative per gene (the
+##      gene's result); a gene's other transcripts are searched too and must pass
+##      on their own to stay in the PASS file (see L)
 ##   E  Build or verify diamond database from ref_fa
 ##   F  Diamond blastp merged proteins vs reference proteome; compute coverage metrics
 ##   I  Load optional merge table for flag annotations
@@ -50,7 +52,9 @@ use warnings;
 ##   --diamond_bin PATH   Path to diamond (default: diamond in PATH)
 ##
 ## Outputs:
-##   <out>/report.tsv               Per-merge validation results (TSV, 17 columns)
+##   <out>/report.tsv               Per-merge validation results (TSV, 18 columns); rebuild_ref
+##                                  = the reference the miniprot rebuild used (miniprot_ref),
+##                                  best_ref_hit = the best DIAMOND hit of the merged protein
 ##   <out>/pass.gff3                Merged genes that PASS all checks
 ##   <out>/fail.gff3                Merged genes that FAIL (clear evidence of bad merge)
 ##   <out>/review.gff3              Merged genes that need REVIEW (borderline)
@@ -263,6 +267,7 @@ my @gff_header_lines;    # ##pragma and comment lines before first gene block
                     strand       => $f[6],
                     frame_break  => $attrs{frame_break} // "",   # merge_split_genes.pl: junctions out of frame
                     miniprot     => $attrs{miniprot_support} // "",   # rebuild_with_miniprot.pl: SUPPORTED | NOT_SUPPORTED:<reason>
+                    rebuild_ref  => $attrs{miniprot_ref} // ".",      # rebuild_with_miniprot.pl: reference the model was built from
                 };
             }
         } elsif (defined $cur_gene_id) {
@@ -303,6 +308,9 @@ my %has_internal_stop;     # new_gene_id -> 0/1
 my %tid_internal_stop;     # merged transcript id -> 0/1 (every transcript, not just the representative)
 my %internal_stop_pos;     # new_gene_id -> comma-sep positions or "."
 my %merged_prot_len;       # new_gene_id -> aa length (after stripping terminal *)
+my %rep_tid;               # new_gene_id -> transcript id of the representative
+my %tid_prot;              # merged transcript id -> protein (terminal stop stripped)
+my %gene_n_tx;             # new_gene_id -> number of translated transcripts
 
 for my $tid (@$mrgd_prot_order) {
     my $gid = $mrgd_tid_to_gene{$tid};
@@ -318,6 +326,8 @@ for my $tid (@$mrgd_prot_order) {
     while ($seq =~ /[*.]/g) { push @ipos, pos($seq) }
     my $has_stop = @ipos ? 1 : 0;
     $tid_internal_stop{$tid} = $has_stop;
+    $tid_prot{$tid} = $seq;
+    $gene_n_tx{$gid}++;
 
     # pick representative: prefer no internal stops, then longest
     if (!exists $merged_prot{$gid}) {
@@ -325,6 +335,7 @@ for my $tid (@$mrgd_prot_order) {
         $has_internal_stop{$gid}  = $has_stop;
         $internal_stop_pos{$gid}  = @ipos ? join(",", @ipos) : ".";
         $merged_prot_len{$gid}    = length($seq);
+        $rep_tid{$gid}            = $tid;
     } else {
         # prefer stop-free over stop-containing; break ties by length
         my $cur_stop = $has_internal_stop{$gid};
@@ -336,6 +347,7 @@ for my $tid (@$mrgd_prot_order) {
             $has_internal_stop{$gid} = $has_stop;
             $internal_stop_pos{$gid} = @ipos ? join(",", @ipos) : ".";
             $merged_prot_len{$gid}   = length($seq);
+            $rep_tid{$gid}           = $tid;
         }
     }
 }
@@ -352,6 +364,8 @@ printf "  With internal stops:       %d\n", $n_internal_stop;
 #   - unknown AA (.) replaced with X  (gffread emits . for N-containing codons;
 #     diamond rejects . but accepts X)
 #   - header is the gene ID so diamond hits come back keyed by gene ID directly
+#   - a gene with several transcripts (a multi-isoform merge without the miniprot
+#     rebuild): its other stop-free transcripts too, as "tx:<transcript id>"
 my $diamond_query_fa = "$scratch_dir/merged_proteins_clean.fa";
 {
     open my $fh, ">", $diamond_query_fa
@@ -360,6 +374,12 @@ my $diamond_query_fa = "$scratch_dir/merged_proteins_clean.fa";
         (my $clean = $merged_prot{$gid}) =~ s/\*//g;
         $clean =~ tr/./X/;
         print $fh ">$gid\n$clean\n";
+    }
+    for my $tid (sort keys %tid_prot) {
+        my $gid = $mrgd_tid_to_gene{$tid};
+        next if $tid eq ($rep_tid{$gid} // "") || $tid_internal_stop{$tid};
+        (my $clean = $tid_prot{$tid}) =~ tr/./X/;
+        print $fh ">tx:$tid\n$clean\n";
     }
     close $fh;
 }
@@ -403,6 +423,7 @@ run_cmd(
 #   6:sstart  7:send    8:evalue  9:bitscore 10:scovhsp 11:slen
 #   12:qcovhsp 13:qlen
 my %gene_diamond_hits;  # new_gene_id -> [{...}, ...]  sorted by bitscore desc
+my %tid_merged_cov;     # non-representative transcript -> merged_cov_by_ref (no entry = no hit)
 my %gene_cov_metrics;   # new_gene_id -> { merged_cov_by_ref, ... }
 
 {
@@ -429,6 +450,15 @@ my %gene_cov_metrics;   # new_gene_id -> { merged_cov_by_ref, ... }
         };
     }
     close $dh;
+
+    # a non-representative transcript: merged_cov_by_ref of its best hit
+    for my $query (keys %raw_hits) {
+        next unless $query =~ /^tx:(.+)$/;
+        my $tid = $1;
+        my @sorted = sort by_bitscore_desc @{ delete $raw_hits{$query} };
+        my $best = $sorted[0];
+        $tid_merged_cov{$tid} = ($best->{qend} - $best->{qstart} + 1) / ($best->{qlen} || 1);
+    }
 
     # Sort hits by bitscore, deduplicate by sseqid, keep top 5
     for my $gid (keys %raw_hits) {
@@ -587,6 +617,7 @@ print $rep join("\t",
     "ref_len",
     "n_ref_hits",
     "miniprot",
+    "rebuild_ref",
     "translation_flag",
     "source_flags",
     "fail_reasons",
@@ -614,6 +645,7 @@ for my $gid (sort keys %merge_info) {
         $cov->{ref_len},
         $cov->{n_ref_hits},
         ($info->{miniprot} ne "" ? $info->{miniprot} : "not_run"),
+        $info->{rebuild_ref},
         $res->{translation_flag},
         $src_flag,
         $fail_str,
@@ -649,13 +681,18 @@ for my $gid (@gff_gene_order) {
     my @block = @{ $gene_blocks{$gid} // [] };
 
     # A merged gene is judged by its best transcript, but a multi-isoform merge
-    # carries N x M cross-product transcripts: those with an internal stop are not
-    # written to the PASS file (with their exons/CDS/UTRs); the gene records them.
-    my @dropped;
+    # carries N x M cross-product transcripts (without the miniprot rebuild, which
+    # leaves one): each must pass on its own -- no internal stop, and one reference
+    # covering >= min_merged_cov of its protein -- or it is not written to the PASS
+    # file (with its exons/CDS/UTRs); the gene records which and why.
+    my (@dropped, @dropped_cov);
     if ($res eq "PASS") {
         my %drop;
         for my $tid (keys %tid_internal_stop) {
-            $drop{$tid} = 1 if $tid_internal_stop{$tid} && ($mrgd_tid_to_gene{$tid} // "") eq $gid;
+            next unless ($mrgd_tid_to_gene{$tid} // "") eq $gid;
+            if ($tid_internal_stop{$tid}) { $drop{$tid} = 1; push @dropped, $tid; next }
+            next if $tid eq ($rep_tid{$gid} // "");
+            if (($tid_merged_cov{$tid} // 0) < $min_merged_cov) { $drop{$tid} = 1; push @dropped_cov, $tid }
         }
         if (%drop) {
             my @kept;
@@ -667,7 +704,8 @@ for my $gid (@gff_gene_order) {
                 push @kept, $line;
             }
             @block = @kept;
-            @dropped = sort keys %drop;
+            @dropped     = sort @dropped;
+            @dropped_cov = sort @dropped_cov;
         }
     }
 
@@ -675,6 +713,7 @@ for my $gid (@gff_gene_order) {
     if (@block) {
         $block[0] .= ";transl_result=$res";
         $block[0] .= ";dropped_transcripts_internal_stop=" . join(",", @dropped) if @dropped;
+        $block[0] .= ";dropped_transcripts_low_cov=" . join(",", @dropped_cov) if @dropped_cov;
     }
     for my $line (@block) { print $fh "$line\n" }
 }

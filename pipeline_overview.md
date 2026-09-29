@@ -94,9 +94,10 @@ one corrected gene model.
 ║  · Rebuild one gene per locus — join exon / CDS / UTR        ║
 ║    features in genomic order; recalculate CDS phase          ║
 ║  · Assign new IDs; tag merged genes with source=Mender       ║
-║  · miniprot: align the tiling reference protein across the   ║
-║    merged locus; SUPPORTED -> model rebuilt (real splice     ║
-║    sites); NOT_SUPPORTED -> placeholder kept, fails step 8   ║
+║  · miniprot: align rebuild_candidates (closest first) across ║
+║    the merged locus; SUPPORTED -> model rebuilt (real splice ║
+║    sites; end fragments' UTRs put back where the start/stop  ║
+║    is theirs); NOT_SUPPORTED -> placeholder kept, fails st. 8║
 ║    [ run_miniprot = yes ]                                    ║
 ╚══════════════════════════════════════════════════════════════╝
                               │
@@ -158,21 +159,23 @@ flags are comma-separated in the `flag` column.
 
 | Flag | Meaning | Default action |
 |---|---|---|
-| `CLEAN` | Directly adjacent, ≥2 tiling hits, combined coverage ≥60% | merge |
+| `CLEAN` | Directly adjacent, ≥2 tiling hits, `tiling_cov_pct` ≥60% | merge |
 | `STRONG` | All junctions ≥3 tiling hits — strongest protein evidence | merge |
-| `SINGLE_HIT` | All junctions have exactly 1 tiling hit. For single-copy genes this is the expected maximum — inspect `hit_desc` and `pident` before skipping | review |
+| `SINGLE_HIT` | All junctions have exactly 1 tiling hit. For single-copy genes this is the expected maximum — inspect `tiling_ref_desc` and `pident` before skipping | review |
 | `WEAK_END` | Low-evidence terminal junction survived asymmetric trimming | merge with caution |
 | `WEAK_INTERNAL` | Low-evidence internal junction survived chain splitting | merge with caution |
-| `LOW_COV` | Combined reference coverage <60% — more likely domain sharing than a split gene | **skip** |
+| `LOW_COV` | `tiling_cov_pct` <60% — more likely domain sharing than a split gene | **skip** |
 
 ### Structural caution
 
 | Flag | Meaning | Default action |
 |---|---|---|
+| `PIECES_OVERLAP` | Two pieces align to the same region of some reference (each over ≥60% of itself) — copies of one gene unit (tandem duplicates), not consecutive parts of one gene; reference in `overlap_ref` | **skip** |
+| `JUNCTION_OVERHANG` | A piece extends more than `end_tol` aa past its alignment at a junction — sequence the reference lacks at the break | review |
 | `SKIPPED_GENE` | A non-adjacent **same-strand** gene sits inside the merge locus — review before merging | **skip** |
 | `OPPOSITE_STRAND_SKIP` | All skipped genes at non-adjacent junctions are on the opposite strand — interleaved unrelated genes; does not affect merge validity | pass |
 | `TRANSITIVE_JOIN` | One or more junctions in the chain lack direct pairwise tiling; connection inferred through a shared neighbour | review |
-| `MULTI_ISOFORM_JOIN` | ≥1 source gene has multiple transcripts; merged gene will contain cross-product isoforms | review |
+| `MULTI_ISOFORM_JOIN` | ≥1 source gene has multiple transcripts; the placeholder carries the cross-product, a rebuilt gene one transcript (`isoforms_not_used=` records the rest) | review |
 | `LARGE_SPAN` | Merged locus exceeds `large_span_warn` (default 500 kb) | review |
 | `LARGE_SPAN_EXTREME` | Merged locus exceeds `large_span_extreme` (default 2 Mb) — very few vertebrate genes span this range | **skip** recommended |
 
@@ -190,11 +193,11 @@ flags are comma-separated in the `flag` column.
 
 | Parameter | What it controls | Default |
 |---|---|---|
-| `skip_flags` | Exclude candidates whose flag column contains any of these | `SKIPPED_GENE,LOW_COV` |
+| `skip_flags` | Exclude candidates whose flag column contains any of these | `SKIPPED_GENE,LOW_COV,PIECES_OVERLAP` |
 | `spanning_rescue` | If `yes`, rescue merges blocked by `SKIPPED_GENE` or `OPPOSITE_STRAND_SKIP` when `isoseq_flag` is `FULL_SPAN`. Does **not** rescue `LOW_COV` or other evidence-quality flags. | `no` |
 | `flags` | Include only candidates matching this flag (`all` = no filter) | `all` |
 | `min_tiling` | Minimum `max_tiling_hits` to process a candidate | `1` |
-| `min_cov` | Minimum combined reference coverage % | `0` |
+| `min_cov` | Minimum `tiling_cov_pct` | `0` |
 | `require_isoseq` | Restrict to candidates with this IsoSeq flag (`FULL_SPAN`, `PARTIAL_SPAN`, `NO_SPANNERS`) | _(all)_ |
 | `isoseq_min_spanning` | Minimum number of spanning reads required | `0` |
 | `fix_partial` | Auto-trim unsupported terminal genes in `PARTIAL_SPAN` candidates | `yes` |
@@ -420,7 +423,7 @@ therefore informational only and is **not** included in `skip_flags` by
 default. Before this strand-aware check was introduced, these cases raised a
 spurious `SKIPPED_GENE` and were unnecessarily sent to manual review.
 
-The key measure is `combined_cov_pct`: the span from the leftmost alignment start to the
+The key measure is `tiling_cov_pct`: the span from the leftmost alignment start to the
 rightmost alignment end on the reference protein, divided by the reference
 protein length. This is a span measure, not the sum of individual
 coverages — a 5 aa gap between the two alignments is included in the span
@@ -438,7 +441,7 @@ test passes, the pair is a split-gene candidate.
 
 *Example:* Reference protein = 500 aa. Gene A aligns to positions 10–200;
 gene B aligns to positions 205–480. Combined span = 480 − 10 + 1 = 471 aa.
-`combined_cov_pct` = 471/500 = 94.2%. Tiling gap = 205 − 200 = 5 aa
+`tiling_cov_pct` = 471/500 = 94.2%. Tiling gap = 205 − 200 = 5 aa
 (positive, within wiggle=15). This pair passes.
 
 **Tiling test: complementary alignment on reference protein**
@@ -466,6 +469,41 @@ Overlap too large (overlap = 20 aa, > wiggle=15) — FAILS:
  |===========GeneA===========|
                |========GeneB========|
                ←── 20 aa overlap ───→
+```
+
+**Which reference is which.** Each pair is tested on every reference protein both
+genes hit; the one with the highest combined coverage is the pair's `tiling_ref`, and
+`tiling_cov_pct`, `tiling_gap` and `evalues` in the merge table are all measured on it
+(for a chain, on its best pair's `tiling_ref`). The rebuild in step 6 uses a separate,
+ranked list, `rebuild_candidates`: the references hitting two or more chain genes,
+most genes first, then identity-weighted coverage, so the closest reference (often the
+species' own transcript) is tried first. The one the model is built from is
+`rebuild_ref` in `miniprot.tsv` and `report.tsv`. `tiling_ref` is usually among the
+candidates, but often not first.
+
+**Tandem copies: PIECES_OVERLAP.** The tiling test works one reference at a time: two
+pieces on top of each other on one reference only mean that reference does not
+support the pair; any other reference that tiles them still makes the merge. And a
+piece covering > 85% of a reference is dropped by the fragment filter before the test.
+Two copies of a duplicated gene can therefore be merged when some reference is a fused
+two-unit protein: they tile on it, while the single-unit references, on which they sit
+on top of each other, are never looked at. `PIECES_OVERLAP` checks every reference both
+pieces hit, including those dropped hits, and flags the merge when two pieces overlap
+by ≥ `overlap_min_frac` (0.5) of the shorter alignment, each aligned over
+≥ `overlap_min_qcov` (60%) of itself (so a shared domain is not enough). It is in
+`skip_flags` by default.
+
+```
+Congeria merge_468 (pieces A = 617 aa, B = 609 aa):
+
+XP_052251622 (Dreissena, two units fused, 1225 aa):
+ |====== A 1–614 ======| gap 15 |====== B 629–1224 ======|   tiles -> the merge
+
+XP_052250464 (Dreissena, one unit, 612 aa):
+ |====== A 7–611 ======|      98.9% of the reference  (dropped by the fragment filter)
+ |====== B 4–611 ======|      99.3% of the reference  (dropped by the fragment filter)
+ same residues -> PIECES_OVERLAP (also on XP_052250463 and LOTGI021029; overlap_ref
+ names the first by id, here LOTGI021029)
 ```
 
 **num_tiling_hits.** For a pair to record a tiling hit against a given

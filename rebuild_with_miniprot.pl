@@ -21,9 +21,10 @@ use Getopt::Long;
 ##
 ## Per merged gene (Mender gene lines in the merged GFF):
 ##   region  = merged gene span +/- --flank bp (clipped to the sequence)
-##   proteins = ref_candidates of its merge_id in the merge table (ranked by
+##   proteins = rebuild_candidates of its merge_id in the merge table (ranked by
 ##              find_split_genes.pl: most chain genes, then identity-weighted
-##              coverage), or best_hit when the table has no ref_candidates column
+##              coverage), or tiling_ref when the table has no rebuild_candidates
+##              column
 ##   miniprot --gff on (region, protein), one candidate at a time, best-ranked first,
 ##   at most --max_refs; the Rank=1 alignment is judged, and the first SUPPORTED
 ##   candidate is used. A distant reference aligned to the genome makes spurious
@@ -32,7 +33,8 @@ use Getopt::Long;
 ##                   no in-frame stop (st:i:0), and its CDS overlap every source gene
 ##     NOT_SUPPORTED otherwise (the reason is recorded)
 ##   SUPPORTED:     the gene's transcripts are replaced by the miniprot model: one
-##                  mRNA, exon = CDS (no UTRs), phases from miniprot; gene span = model
+##                  mRNA, phases from miniprot; gene span = model. miniprot gives the CDS
+##                  only; UTRs come back from the source genes (see UTRs below)
 ##   NOT_SUPPORTED: no candidate supports it; the placeholder model is kept and
 ##                  validate_merge_translation.pl fails it (NO_PROTEIN_SPAN). The
 ##                  best-ranked candidate's alignment is what is reported.
@@ -40,9 +42,28 @@ use Getopt::Long;
 ## references hitting two or more of them), and SUPPORTED always needs one
 ## alignment covering every source gene, so trying several does not let an
 ## unrelated protein through.
+## UTRs: a protein has none, so a rebuilt model is CDS-only unless its ends are the source
+## genes' ends. When the rebuilt start codon is at the same genome position as the 5' source
+## gene's CDS start, that gene's 5' UTR (its exons upstream of the start, and the untranslated
+## part of the first coding exon) is put back; the same for the 3' UTR when the rebuilt CDS
+## ends where the 3' source gene's CDS ends (miniprot's CDS includes the stop codon, as the
+## source's does). A UTR is never moved to a start or stop that differs: it would sit inside
+## the new CDS or away from it. Recorded as utr5= / utr3= from_fragment:<transcript> | none,
+## with five_prime_UTR / three_prime_UTR features.
+## Isoforms: a rebuilt gene has ONE transcript. The reference protein defines one coding
+## model; alternative splicing is evidence it cannot give. Source transcripts contribute only
+## the ends (start / stop codon completion, UTRs), each from the first transcript of the end
+## fragment, longest CDS first, that fits there; the notes name it (from_fragment:<transcript>).
+## When a source gene had several transcripts (the placeholder carried their N x M
+## cross-product), the gene records placeholder_transcripts=, source_isoforms=<gene>:<n>, and
+## isoforms_not_used= (the multi-isoform source transcripts nothing was taken from), so no
+## isoform is dropped silently.
 ## Attributes on the gene (and mRNA): miniprot_support=SUPPORTED|NOT_SUPPORTED:<reason>,
 ## miniprot_ref, miniprot_ref_rank (1 = best-ranked candidate), miniprot_refs_tried,
 ## miniprot_prot_cov, miniprot_identity, miniprot_positive.
+## Report (--report, one row per merged gene): rebuild_ref is the reference the model
+## was rebuilt from (SUPPORTED), or the best-ranked candidate whose alignment is
+## reported (NOT_SUPPORTED); rebuild_ref_desc is its description from --ref_fa.
 ##
 ## Usage:
 ##   perl rebuild_with_miniprot.pl --merged_gff merges.gff --removed_gff removed.gff \
@@ -88,8 +109,8 @@ open my $fai, "<", "$genome_fa.fai" or die "cant open $genome_fa.fai: $!\n";
 while (my $line = <$fai>) { my ($name, $len) = split /\t/, $line; $seq_len{$name} = $len }
 close $fai;
 
-# merge_id -> reference proteins to try, best-ranked first: ref_candidates when the
-# table has it (find_split_genes.pl), else best_hit alone
+# merge_id -> reference proteins to try, best-ranked first: rebuild_candidates, then
+# tiling_ref (already in the list when find_split_genes.pl wrote it)
 my %candidates;
 open my $mt, "<", $merge_table or die "cant open $merge_table: $!\n";
 my $hdr_line = <$mt>;
@@ -97,14 +118,16 @@ chomp $hdr_line;
 my @hdr = split /\t/, $hdr_line;
 my %col;
 for my $i (0 .. $#hdr) { $col{ $hdr[$i] } = $i }
-die "merge table needs merge_id and best_hit columns\n" unless defined $col{merge_id} && defined $col{best_hit};
+die "merge table needs merge_id and rebuild_candidates or tiling_ref columns\n"
+    unless defined $col{merge_id} && (defined $col{rebuild_candidates} || defined $col{tiling_ref});
 while (my $line = <$mt>) {
     chomp $line;
     my @f = split /\t/, $line;
-    my $listed = defined $col{ref_candidates} ? ($f[ $col{ref_candidates} ] // "") : "";
+    my $listed = defined $col{rebuild_candidates} ? ($f[ $col{rebuild_candidates} ] // "") : "";
+    my $tiling = defined $col{tiling_ref} ? ($f[ $col{tiling_ref} ] // "") : "";
     my @refs;
     my %seen;
-    for my $ref (split(/,/, $listed), $f[ $col{best_hit} ] // "") {
+    for my $ref (split(/,/, $listed), $tiling) {
         next if $ref eq "" || $ref eq "?" || $seen{$ref}++;
         push @refs, $ref;
     }
@@ -118,11 +141,22 @@ my %wanted;
 for my $refs (values %candidates) {
     for my $ref (@$refs) { $wanted{$ref} = 1 }
 }
-my (%ref_seq, $id);
+# descriptions as find_split_genes.pl reads them: gene_symbol: and description: fields
+my (%ref_seq, %ref_desc, $id);
 open my $rf, "<", $ref_fa or die "cant open $ref_fa: $!\n";
 while (my $line = <$rf>) {
     chomp $line;
-    if ($line =~ /^>(\S+)/) { $id = $wanted{$1} ? $1 : undef; $ref_seq{$id} = "" if defined $id; next }
+    if ($line =~ /^>(\S+)/) {
+        $id = $wanted{$1} ? $1 : undef;
+        next unless defined $id;
+        $ref_seq{$id} = "";
+        my ($symbol)  = $line =~ /gene_symbol:(\S+)/;
+        my ($text)    = $line =~ /description:(.+?)(?:\s+\[|$)/;
+        my @parts;
+        for my $part ($symbol, $text) { push @parts, $part if defined $part }
+        $ref_desc{$id} = @parts ? join(" | ", @parts) : ".";
+        next;
+    }
     $ref_seq{$id} .= $line if defined $id;
 }
 close $rf;
@@ -159,7 +193,8 @@ close $in;
 # source gene spans: the source genes are gone from the merged GFF; merge_split_genes.pl
 # wrote them (with their merge group) to its removed-genes GFF
 my %source_span;   # source gene id -> [start, end]
-my (%tx_gene, %tx_cds);   # source transcript -> gene; -> [[start, end, phase]]
+my (%tx_gene, %tx_cds, %tx_exons);   # source transcript -> gene; -> [[start, end, phase]]; -> [[start, end]]
+my %transcripts_of;                  # source gene -> [its transcripts]
 open my $rm, "<", $removed_gff or die "cant open $removed_gff: $!\n";
 while (my $line = <$rm>) {
     chomp $line;
@@ -171,21 +206,27 @@ while (my $line = <$rm>) {
         $source_span{$fid} = [$f[3], $f[4]] if defined $fid;
     } elsif ($f[2] eq "mRNA" && defined $fid && defined $parent) {
         $tx_gene{$fid} = $parent;
+        push @{ $transcripts_of{$parent} }, $fid;
     } elsif ($f[2] eq "CDS" && defined $parent) {
         push @{ $tx_cds{$parent} }, [$f[3], $f[4], ($f[7] =~ /^[012]$/ ? $f[7] : 0)];
+    } elsif ($f[2] eq "exon" && defined $parent) {
+        push @{ $tx_exons{$parent} }, [$f[3], $f[4]];
     }
 }
 close $rm;
-# per source gene, the CDS of its longest-CDS transcript: used to complete a rebuilt
-# model's ends with the fragment's own start and stop codons
-my %source_cds;
+# per source gene, its transcripts (CDS and exons), longest CDS first: the ends of a
+# rebuilt model are completed (start / stop codon) and given UTRs from the first transcript
+# of the end fragment that fits there -- not blindly the longest, which in a multi-isoform
+# gene can be an alternative ORF that has nothing to do with the rebuilt model
+my %source_txs;
+sub by_cds_length_desc($$) { my ($left, $right) = @_; return $right->{len} <=> $left->{len} || $left->{tx} cmp $right->{tx} }
 for my $tx (sort keys %tx_cds) {
     my $gene = $tx_gene{$tx} // next;
     my $len = 0;
     for my $seg (@{ $tx_cds{$tx} }) { $len += $seg->[1] - $seg->[0] + 1 }
-    my $cur = $source_cds{$gene};
-    $source_cds{$gene} = { len => $len, cds => $tx_cds{$tx} } if !$cur || $len > $cur->{len};
+    push @{ $source_txs{$gene} }, { len => $len, cds => $tx_cds{$tx}, exons => $tx_exons{$tx} // [], tx => $tx };
 }
+for my $gene (keys %source_txs) { @{ $source_txs{$gene} } = sort by_cds_length_desc @{ $source_txs{$gene} } }
 
 # segment comparators for sort ([start, end, ...]); sort passes the two elements in @_
 sub by_start_ascending($$) { my ($left, $right) = @_; return $left->[0] <=> $right->[0] }
@@ -215,11 +256,31 @@ sub end_source {
     my $want_low = ($which eq "5prime") == ($strand ne "-");   # lowest start: 5' on +, 3' on -
     my ($best, $best_pos);
     for my $sg (@sources) {
-        next unless $source_span{$sg} && $source_cds{$sg};
+        next unless $source_span{$sg} && $source_txs{$sg};
         my $pos = $want_low ? $source_span{$sg}[0] : $source_span{$sg}[1];
         if (!defined $best || ($want_low ? $pos < $best_pos : $pos > $best_pos)) { ($best, $best_pos) = ($sg, $pos) }
     }
     return $best;
+}
+
+# A source transcript's UTR at one end of its CDS: $boundary is its first coding base
+# ("5prime") or last ("3prime"). Returns the genome coordinate the terminal coding exon
+# extends to (the UTR part of the exon holding the boundary; undef if it has none) and the
+# whole UTR exons beyond it, in transcription order.
+sub source_utr {
+    my ($which, $strand, $boundary, $exons) = @_;
+    my $below = ($which eq "5prime") == ($strand ne "-");   # the UTR lies at lower coordinates
+    my ($extend, @whole);
+    for my $exon (@$exons) {
+        if ($below) {
+            if    ($exon->[1] < $boundary)                            { push @whole, [@$exon] }
+            elsif ($exon->[0] < $boundary && $boundary <= $exon->[1]) { $extend = $exon->[0] }
+        } else {
+            if    ($exon->[0] > $boundary)                            { push @whole, [@$exon] }
+            elsif ($exon->[0] <= $boundary && $boundary < $exon->[1]) { $extend = $exon->[1] }
+        }
+    }
+    return ($extend, transcription_order($strand, @whole));
 }
 
 # genome bases chr:start-end (1-based), on the given strand (reverse complement on -)
@@ -313,12 +374,12 @@ sub try_reference {
 }
 
 open my $rep, ">", $report or die "cant write $report: $!\n";
-print $rep join("\t", qw(new_gene_id merge_id ref region prot_len prot_cov identity positive frameshifts stops
-                         n_cds sources_covered result reason ref_rank refs_tried)), "\n";
+print $rep join("\t", qw(new_gene_id merge_id rebuild_ref region prot_len prot_cov identity positive frameshifts stops
+                         n_cds sources_covered result reason ref_rank refs_tried rebuild_ref_desc)), "\n";
 
 my %new_block;   # gid -> [lines] for SUPPORTED genes (replacing the placeholder transcripts)
 my %gene_attr;   # gid -> attribute string to append
-my ($n_sup, $n_not, $n_sup_later) = (0, 0, 0);
+my ($n_sup, $n_not, $n_sup_later, $n_utr5, $n_utr3, $n_iso_genes, $n_iso_dropped) = (0, 0, 0, 0, 0, 0, 0);
 mkdir $scratch unless -d $scratch;
 
 for my $item (@order) {
@@ -332,7 +393,7 @@ for my $item (@order) {
     unless (@refs) {
         my $listed = $candidates{ $g->{merge_id} // "" } // [];
         print $rep join("\t", $gid, $g->{merge_id} // ".", $listed->[0] // ".", (".") x 9,
-                        "NOT_SUPPORTED", "no_reference_protein", ".", 0), "\n";
+                        "NOT_SUPPORTED", "no_reference_protein", ".", 0, "."), "\n";
         $gene_attr{$gid} = ";miniprot_support=NOT_SUPPORTED:no_reference_protein";
         $n_not++;
         next;
@@ -363,7 +424,7 @@ for my $item (@order) {
     } else {
         push @row, (".") x 7;
     }
-    print $rep join("\t", @row, $result, $reason, $rank, $tried), "\n";
+    print $rep join("\t", @row, $result, $reason, $rank, $tried, $ref_desc{ $use->{ref} } // "."), "\n";
 
     my $attrs = ";miniprot_support=$result" . ($reason ne "." ? ":$reason" : "")
               . ";miniprot_ref=$use->{ref};miniprot_ref_rank=$rank;miniprot_refs_tried=$tried";
@@ -389,26 +450,27 @@ for my $item (@order) {
     # upstream of that point (from its ATG) completes the model.
     my $start_note = "incomplete";
     my $first_codon = $tx[0][2] == 0 && $tx[0][1] - $tx[0][0] >= 2 ? first_codon_of($g->{chr}, $tx[0], $strand) : "";
+    my $five = end_source("5prime", $strand, @sources);
     if ($first_codon eq "ATG") {
         $start_note = "present";
-    } else {
-        my $five = end_source("5prime", $strand, @sources);
-        my @fcds = $five ? transcription_order($strand, @{ $source_cds{$five}{cds} }) : ();
-        if (@fcds && $fcds[0][2] == 0 && first_codon_of($g->{chr}, $fcds[0], $strand) eq "ATG") {
+    } elsif ($five) {
+        # the fragment's transcripts, longest CDS first; the first that fits completes it
+        for my $cand (@{ $source_txs{$five} }) {
+            my @fcds = transcription_order($strand, @{ $cand->{cds} });
+            next unless $fcds[0][2] == 0 && first_codon_of($g->{chr}, $fcds[0], $strand) eq "ATG";
             # miniprot's first coding base (after its phase), and the fragment segment holding it
             my $mp_first = $strand eq "-" ? $tx[0][1] - $tx[0][2] : $tx[0][0] + $tx[0][2];
             my $k = segment_holding($mp_first, \@fcds);
-            if (defined $k) {
-                my $offset = 0;   # fragment coding bases before miniprot's first coding base
-                for my $i (0 .. $k - 1) { $offset += $fcds[$i][1] - $fcds[$i][0] + 1 }
-                $offset += $strand eq "-" ? $fcds[$k][1] - $mp_first : $mp_first - $fcds[$k][0];
-                if ($offset > 0 && $offset % 3 == 0) {
-                    my @head = @fcds[0 .. $k - 1];
-                    my $joined = $strand eq "-" ? [$tx[0][0], $fcds[$k][1], 0] : [$fcds[$k][0], $tx[0][1], 0];
-                    @tx = (@head, $joined, @tx[1 .. $#tx]);
-                    $start_note = "from_fragment:$five";
-                }
-            }
+            next unless defined $k;
+            my $offset = 0;   # fragment coding bases before miniprot's first coding base
+            for my $i (0 .. $k - 1) { $offset += $fcds[$i][1] - $fcds[$i][0] + 1 }
+            $offset += $strand eq "-" ? $fcds[$k][1] - $mp_first : $mp_first - $fcds[$k][0];
+            next unless $offset > 0 && $offset % 3 == 0;
+            my @head = @fcds[0 .. $k - 1];
+            my $joined = $strand eq "-" ? [$tx[0][0], $fcds[$k][1], 0] : [$fcds[$k][0], $tx[0][1], 0];
+            @tx = (@head, $joined, @tx[1 .. $#tx]);
+            $start_note = "from_fragment:$cand->{tx}";
+            last;
         }
     }
     set_phases(\@tx, $start_note eq "incomplete" ? $tx[0][2] : 0);
@@ -421,31 +483,89 @@ for my $item (@order) {
     # the model is kept as it is, marked stop_codon=absent -- never extended into genome
     # sequence no annotation covered, where the first stop found is usually the wrong one.
     my $end_note = $use->{stop} ? "present" : "absent";
-    if (!$use->{stop}) {
-        my $three = end_source("3prime", $strand, @sources);
-        my @fcds = $three ? transcription_order($strand, @{ $source_cds{$three}{cds} }) : ();
+    my $three = end_source("3prime", $strand, @sources);
+    if (!$use->{stop} && $three) {
         my $model_coding = -$tx[0][2];
         for my $seg (@tx) { $model_coding += $seg->[1] - $seg->[0] + 1 }
-        if (@fcds && $model_coding % 3 == 0 && last_codon_of($g->{chr}, $fcds[-1], $strand) =~ /^(?:TAA|TAG|TGA)$/) {
+        # the fragment's transcripts, longest CDS first; the first that fits completes it
+        for my $cand ($model_coding % 3 == 0 ? @{ $source_txs{$three} } : ()) {
+            my @fcds = transcription_order($strand, @{ $cand->{cds} });
+            next unless last_codon_of($g->{chr}, $fcds[-1], $strand) =~ /^(?:TAA|TAG|TGA)$/;
             my $mp_last = $strand eq "-" ? $tx[-1][0] : $tx[-1][1];
             my $k = segment_holding($mp_last, \@fcds);
-            if (defined $k) {
-                my $offset = -$fcds[0][2];   # fragment coding bases up to and including miniprot's last base
-                for my $i (0 .. $k - 1) { $offset += $fcds[$i][1] - $fcds[$i][0] + 1 }
-                $offset += $strand eq "-" ? $fcds[$k][1] - $mp_last + 1 : $mp_last - $fcds[$k][0] + 1;
-                my $at_segment_end = $strand eq "-" ? $mp_last == $fcds[$k][0] : $mp_last == $fcds[$k][1];
-                if ($offset > 0 && $offset % 3 == 0 && !($at_segment_end && $k == $#fcds)) {
-                    if ($strand eq "-") { $tx[-1][0] = $fcds[$k][0] } else { $tx[-1][1] = $fcds[$k][1] }
-                    push @tx, @fcds[$k + 1 .. $#fcds];
-                    $end_note = "from_fragment:$three";
-                    set_phases(\@tx, $tx[0][2]);
-                }
-            }
+            next unless defined $k;
+            my $offset = -$fcds[0][2];   # fragment coding bases up to and including miniprot's last base
+            for my $i (0 .. $k - 1) { $offset += $fcds[$i][1] - $fcds[$i][0] + 1 }
+            $offset += $strand eq "-" ? $fcds[$k][1] - $mp_last + 1 : $mp_last - $fcds[$k][0] + 1;
+            my $at_segment_end = $strand eq "-" ? $mp_last == $fcds[$k][0] : $mp_last == $fcds[$k][1];
+            next unless $offset > 0 && $offset % 3 == 0 && !($at_segment_end && $k == $#fcds);
+            if ($strand eq "-") { $tx[-1][0] = $fcds[$k][0] } else { $tx[-1][1] = $fcds[$k][1] }
+            push @tx, @fcds[$k + 1 .. $#fcds];
+            $end_note = "from_fragment:$cand->{tx}";
+            set_phases(\@tx, $tx[0][2]);
+            last;
         }
     }
-    $attrs .= ";start_codon=$start_note;stop_codon=$end_note";
+    # UTRs from the source genes, only where the rebuilt CDS starts (ends) exactly where the
+    # 5' (3') source gene's CDS does
+    my @exons;
+    for my $c (@tx) { push @exons, [$c->[0], $c->[1]] }
+    my %utr_note = (5 => "none", 3 => "none");
+    for my $which ("5prime", "3prime") {
+        my $source = ($which eq "5prime" ? $five : $three) // next;
+        my $is5   = $which eq "5prime";
+        my $low   = ($is5 == ($strand ne "-"));   # this end is the lower genome coordinate
+        my $model_end = $is5 ? ($low ? $tx[0][0] : $tx[0][1]) : ($low ? $tx[-1][0] : $tx[-1][1]);
+        # the fragment's transcripts, longest CDS first: the first one whose CDS ends here and
+        # that has a UTR there
+        for my $cand (@{ $source_txs{$source} }) {
+            my @scds = transcription_order($strand, @{ $cand->{cds} });
+            my $source_end = $is5 ? ($low ? $scds[0][0] : $scds[0][1]) : ($low ? $scds[-1][0] : $scds[-1][1]);
+            next unless $model_end == $source_end;
+            my ($extend, @whole) = source_utr($which, $strand, $source_end, $cand->{exons});
+            next unless defined $extend || @whole;
+            my $terminal = $is5 ? $exons[0] : $exons[-1];
+            $terminal->[$low ? 0 : 1] = $extend if defined $extend;
+            if ($is5) { unshift @exons, @whole } else { push @exons, @whole }
+            $utr_note{ $is5 ? 5 : 3 } = "from_fragment:$cand->{tx}";
+            last;
+        }
+    }
+    $n_utr5++ if $utr_note{5} ne "none";
+    $n_utr3++ if $utr_note{3} ne "none";
+    # UTR features: the parts of exons outside the CDS span
+    my @cds_sorted = sort by_start_ascending @tx;
+    my ($cds_lo, $cds_hi) = ($cds_sorted[0][0], $cds_sorted[-1][1]);
+    my @utrs;   # [type, start, end]
+    my ($low_type, $high_type) = $strand eq "-" ? ("three_prime_UTR", "five_prime_UTR") : ("five_prime_UTR", "three_prime_UTR");
+    for my $exon (sort by_start_ascending @exons) {
+        push @utrs, [$low_type,  $exon->[0], ($exon->[1] < $cds_lo ? $exon->[1] : $cds_lo - 1)] if $exon->[0] < $cds_lo;
+        push @utrs, [$high_type, ($exon->[0] > $cds_hi ? $exon->[0] : $cds_hi + 1), $exon->[1]] if $exon->[1] > $cds_hi;
+    }
+
+    $attrs .= ";start_codon=$start_note;stop_codon=$end_note;utr5=$utr_note{5};utr3=$utr_note{3}";
+
+    # isoforms: one rebuilt transcript replaces the placeholder's cross-product; record the
+    # source transcripts it does not draw on
+    my $n_placeholder = 0;
+    for my $line (@{ $block{$gid} // [] }) { $n_placeholder++ if $line =~ /\tmRNA\t/ }
+    my %used;
+    for my $note ($start_note, $end_note, $utr_note{5}, $utr_note{3}) { $used{$1} = 1 if $note =~ /^from_fragment:(.+)$/ }
+    my (@multi, @not_used);
+    for my $source (@sources) {
+        my @source_tx = sort @{ $transcripts_of{$source} // [] };
+        next unless @source_tx > 1;
+        push @multi, "$source:" . scalar(@source_tx);
+        for my $source_tx (@source_tx) { push @not_used, $source_tx unless $used{$source_tx} }
+    }
+    if (@multi) {
+        $attrs .= ";placeholder_transcripts=$n_placeholder;source_isoforms=" . join(",", @multi)
+                . ";isoforms_not_used=" . (@not_used ? join(",", @not_used) : "none");
+        $n_iso_genes++;
+        $n_iso_dropped += @not_used;
+    }
     $gene_attr{$gid} = $attrs;
-    my @sorted = sort by_start_ascending @tx;
+    my @sorted = sort by_start_ascending @exons;
     my ($m_start, $m_end) = ($sorted[0][0], $sorted[-1][1]);
     my $old_tid;
     for my $line (@{ $block{$gid} // [] }) {
@@ -455,14 +575,20 @@ for my $item (@order) {
     my @lines = (join("\t", $g->{chr}, "Mender", "mRNA", $m_start, $m_end, ".", $strand, ".",
                       "ID=$tid;Parent=$gid;Name=$tid;merge_source=Mender;merge_id=$g->{merge_id};model_source=miniprot$attrs"));
     my $n = 0;
-    for my $c (@tx) {
+    for my $exon (@exons) {
         $n++;
-        push @lines, join("\t", $g->{chr}, "Mender", "exon", $c->[0], $c->[1], ".", $strand, ".", "ID=$tid.exon.$n;Parent=$tid");
+        push @lines, join("\t", $g->{chr}, "Mender", "exon", $exon->[0], $exon->[1], ".", $strand, ".", "ID=$tid.exon.$n;Parent=$tid");
     }
     $n = 0;
     for my $c (@tx) {
         $n++;
         push @lines, join("\t", $g->{chr}, "Mender", "CDS", $c->[0], $c->[1], ".", $strand, $c->[2], "ID=$tid.CDS.$n;Parent=$tid");
+    }
+    my %n_type;
+    for my $utr (@utrs) {
+        my ($type, $u_start, $u_end) = @$utr;
+        $n_type{$type}++;
+        push @lines, join("\t", $g->{chr}, "Mender", $type, $u_start, $u_end, ".", $strand, ".", "ID=$tid.$type.$n_type{$type};Parent=$tid");
     }
     $new_block{$gid} = { lines => \@lines, start => $m_start, end => $m_end };
 }
@@ -487,3 +613,6 @@ for my $item (@order) {
 close $out;
 printf STDERR "miniprot rebuild: %d SUPPORTED (rebuilt; %d by a lower-ranked reference), %d NOT_SUPPORTED (placeholder kept)\n",
     $n_sup, $n_sup_later, $n_not;
+printf STDERR "  UTRs put back from the source genes: 5' on %d, 3' on %d of the rebuilt models\n", $n_utr5, $n_utr3;
+printf STDERR "  multi-isoform sources: %d rebuilt genes, %d source transcripts not used (isoforms_not_used=)\n",
+    $n_iso_genes, $n_iso_dropped if $n_iso_genes;

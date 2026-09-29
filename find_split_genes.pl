@@ -29,7 +29,16 @@ use Getopt::Long qw(GetOptions);
 ## Usage: perl find_split_genes.pl [--no_asym_trim] \
 ##                                  [--large_span_warn N] \
 ##                                  [--large_span_extreme N] \
+##                                  [--max_dist N] [--wiggle N] [--asym_threshold N] \
+##                                  [--low_cov_thresh N] [--max_evalue E] \
+##                                  [--frag_min_qcov N] [--end_tol N] \
+##                                  [--overlap_min_frac F] [--overlap_min_qcov N] \
 ##                                  diamond.out genes.gff subject.fa query.fa
+##
+##   --overlap_min_frac F  PIECES_OVERLAP: two pieces' alignments on one reference
+##                         overlap by >= F of the shorter alignment (default 0.5)
+##   --overlap_min_qcov N  PIECES_OVERLAP: each piece aligns over >= N% of itself
+##                         on that reference (default 60)
 ##
 ## Output files:
 ##
@@ -41,20 +50,20 @@ use Getopt::Long qw(GetOptions);
 ##     genomic_dist       : number of rank positions between g1 and g2
 ##                          (1 = directly adjacent, 2 = one gene between them, etc)
 ##     g1_desc, g2_desc   : descriptions from query fasta headers
-##     best_hit           : reference protein with highest combined coverage
+##     tiling_ref         : reference protein with highest combined coverage
 ##                          pct for this specific gene pair. Selected purely
 ##                          by combined span / subject length — no description
 ##                          preference applied here.
-##     hit_desc           : description of the best_hit protein
-##     combined_cov_pct   : % of best_hit covered by g1+g2 alignments together
+##     tiling_ref_desc    : description of the tiling_ref protein
+##     tiling_cov_pct     : % of tiling_ref covered by g1+g2 alignments together
 ##                          (span from min sstart to max send / subject length)
-##     tiling_gap         : aa between the two alignments on best_hit
+##     tiling_gap         : aa between the two alignments on tiling_ref
 ##                          positive = gap between alignments (they don't quite meet)
 ##                          zero     = alignments meet perfectly end to end
 ##                          negative = alignments overlap slightly
 ##     g1_subj, g2_subj   : alignment coordinates on the subject (sstart-send)
-##     g1_cov, g2_cov     : individual scovhsp% for each gene vs best_hit
-##     g1_evalue,g2_evalue: diamond evalues for each gene vs best_hit
+##     g1_cov, g2_cov     : individual scovhsp% for each gene vs tiling_ref
+##     g1_evalue,g2_evalue: diamond evalues for each gene vs tiling_ref
 ##     num_tiling_hits    : how many different reference proteins support this
 ##                          pair as tiling fragments — higher = more confident
 ##
@@ -62,7 +71,7 @@ use Getopt::Long qw(GetOptions);
 ##   One row per supporting tiling hit per gene pair, sorted by coverage desc.
 ##   Same columns as summary but for every tiling hit, not just the best.
 ##   Use this to see the full evidence for any pair from the summary.
-##   Columns: g1, g2, genomic_dist, hit, hit_desc, combined_cov_pct,
+##   Columns: g1, g2, genomic_dist, tiling_ref, tiling_ref_desc, tiling_cov_pct,
 ##            tiling_gap, g1_subj, g2_subj, g1_cov, g2_cov,
 ##            g1_evalue, g2_evalue
 ##
@@ -71,14 +80,24 @@ use Getopt::Long qw(GetOptions);
 ##   into multi-gene groups (e.g. A-B + B-C becomes A,B,C in one row).
 ##   Chains are trimmed and split based on junction tiling hit asymmetry
 ##   before writing — see CHAIN TRIMMING AND SPLITTING below.
-##   The reference proteins hitting two or more chain genes are ranked: most chain
-##   genes first, then identity-weighted coverage (the fraction of the reference's
-##   residues the fragments align identically: sum(pident x aligned span) / length,
-##   so a close reference beats a distant one at the same coverage), then a real
-##   description over a bare ID, then the id. The top one is best_hit; the ranked
-##   list is ref_candidates, which the miniprot rebuild tries in order.
-##   The merge evidence (best_combined_cov_pct, LOW_COV, junction overhang) is
-##   measured on each pair's highest-coverage shared reference, as before.
+##   Two kinds of reference protein are reported, one per step:
+##     tiling_ref         : DETECTION. The reference the pieces tile on with the
+##                          highest combined coverage (for a chain: that of its best
+##                          pair). tiling_cov_pct, tiling_gap and evalues are all
+##                          measured on it, and LOW_COV is judged on it.
+##     rebuild_candidates : REBUILD. The reference proteins hitting two or more chain
+##                          genes, ranked: most chain genes first, then identity-
+##                          weighted coverage (the fraction of the reference's
+##                          residues the fragments align identically: sum(pident x
+##                          aligned span) / length, so a close reference beats a
+##                          distant one at the same coverage), then a real
+##                          description over a bare ID, then the id. The miniprot
+##                          rebuild tries them in order; the one it uses is reported
+##                          as rebuild_ref in miniprot.tsv and report.tsv.
+##   tiling_ref is usually one of the candidates (unless 10 others rank above it) but
+##   often not the first: the closest
+##   reference (often the species' own transcript) rebuilds best, the best-tiling one
+##   is the evidence that the pieces are consecutive parts of one protein.
 ##   Columns:
 ##     merge_id              : unique identifier
 ##     num_genes             : how many genes to merge
@@ -86,13 +105,12 @@ use Getopt::Long qw(GetOptions);
 ##     coords_in_order       : comma-sep coordinates in genomic order
 ##     ref                   : chromosome
 ##     gene_descs            : comma-sep descriptions in genomic order
-##     best_hit              : reference protein best representing the whole chain
-##     hit_desc              : description of best_hit
-##     best_combined_cov_pct : highest combined coverage of any shared reference
-##                             by the best pair (the reference may differ from best_hit)
-##     best_gap              : tiling gap for the best pair
-##     evalues               : comma-sep evalues in genomic order vs best_hit
-##                             '?' means that gene has no hit vs best_hit
+##     tiling_ref            : reference protein the best pair tiles on (see above)
+##     tiling_ref_desc       : description of tiling_ref
+##     tiling_cov_pct        : combined coverage of tiling_ref by the best pair
+##     tiling_gap            : tiling gap of the best pair on tiling_ref
+##     evalues               : comma-sep evalues in genomic order vs tiling_ref
+##                             '?' means that gene has no fragment hit vs tiling_ref
 ##     junction_tiling_hits  : pipe-sep tiling hit counts per junction in order
 ##                             e.g. "22|8" for a 3-gene chain with two junctions
 ##                             only present for chains with 2+ pairs, else NA
@@ -110,15 +128,16 @@ use Getopt::Long qw(GetOptions);
 ##     num_pairs_in_chain    : number of pairwise tiling relationships in chain
 ##     flag                  : quality flag(s), comma-sep if multiple apply
 ##                             see FLAG DEFINITIONS below
-##     best_hit_id_cov       : identity-weighted coverage of best_hit by the chain
-##     ref_candidates        : comma-sep reference proteins, ranked (best_hit first,
-##                             at most 10); the miniprot rebuild tries them in order
+##     rebuild_candidates    : comma-sep reference proteins, ranked (see above, at
+##                             most 10); the miniprot rebuild tries them in order
+##     overlap_ref           : the reference on which two pieces align to the same
+##                             region (PIECES_OVERLAP); '.' if none
 ##
 ## =============================================================================
 ## KEY CONCEPTS
 ## =============================================================================
 ##
-## COMBINED_COV_PCT
+## TILING_COV_PCT
 ##   Brief: What fraction of the reference protein is spanned by the two genes
 ##          together.
 ##
@@ -126,7 +145,7 @@ use Getopt::Long qw(GetOptions);
 ##           span from the leftmost alignment start to the rightmost alignment
 ##           end on the reference protein, divided by the reference protein
 ##           length. Any gap between the two alignments is included in the span,
-##           so combined_cov_pct slightly overstates true coverage when there
+##           so tiling_cov_pct slightly overstates true coverage when there
 ##           is a gap. For a 15aa gap on a 500aa protein this is ~3% inflation.
 ##
 ##   Diagram:
@@ -141,7 +160,7 @@ use Getopt::Long qw(GetOptions);
 ##                        |----------gene2-----------|
 ##
 ##     combined span = 480 - 10 + 1 = 471aa
-##     combined_cov_pct = 471 / 500 * 100 = 94.2%
+##     tiling_cov_pct = 471 / 500 * 100 = 94.2%
 ##     tiling_gap = 205 - 200 = 5aa (positive = gap between alignments)
 ##
 ##   Contrast with summing individual coverages:
@@ -233,7 +252,7 @@ use Getopt::Long qw(GetOptions);
 ##     reference protein D:  |--gene1-----------| (gene2 gap=80, rejected)
 ##
 ##     num_tiling_hits = 3 (A, B, C passed; D rejected)
-##     best_hit = whichever of A/B/C gives highest combined_cov_pct
+##     tiling_ref = whichever of A/B/C gives highest tiling_cov_pct
 ##
 ## -----------------------------------------------------------------------------
 ##
@@ -258,17 +277,17 @@ use Getopt::Long qw(GetOptions);
 ##
 ## EVALUES (in merge table)
 ##   Brief: Comma-separated diamond evalues, one per gene in genomic order,
-##          all vs the same chain best_hit reference protein.
+##          all vs the chain's tiling_ref reference protein.
 ##
 ##   Detail: These come from your diamond blastp search of the annotation's proteins
 ##           vs the reference proteome — NOT from the evalue strings embedded
 ##           in your fasta headers (those are from a different search).
-##           A '?' means that gene had no diamond hit vs the chain best_hit
-##           that passed the evalue/coverage filters. This can happen when the
-##           chain best_hit was chosen because it covers most of the chain but
-##           one terminal gene tiles against a slightly different reference
-##           protein. Check split_genes_detail.txt for that gene pair to see
-##           what it does tile against.
+##           A '?' means that gene had no diamond hit vs the chain tiling_ref
+##           that passed the evalue/coverage filters. In a chain of 3+ genes
+##           tiling_ref comes from the best pair, and a gene outside that pair
+##           may tile against a different reference protein. Check
+##           split_genes_detail.txt for that gene pair to see what it does
+##           tile against.
 ##
 ## -----------------------------------------------------------------------------
 ##
@@ -342,10 +361,42 @@ use Getopt::Long qw(GetOptions);
 ##
 ##   Flags that apply to all chain sizes (2-gene pairs and longer):
 ##
-##     LOW_COV            : combined_cov_pct < 60%. The genes together cover
+##     LOW_COV            : tiling_cov_pct < 60%. The genes together cover
 ##                          less than 60% of the reference protein, suggesting
 ##                          domain sharing rather than a genuine split gene.
 ##                          Recommended to skip_flags in production runs.
+##
+##     PIECES_OVERLAP     : two pieces of the merge align to the SAME region of
+##                          some reference protein: the overlap is >= overlap_min_frac
+##                          (default 0.5) of the shorter of the two alignments, and
+##                          each piece aligns over >= overlap_min_qcov (default 60%)
+##                          of ITSELF there (E <= max_evalue). Pieces of one split
+##                          gene are consecutive parts of a protein and sit side by
+##                          side on every reference; two pieces on top of each
+##                          other are copies of one gene unit (tandem duplicates),
+##                          joined only because some other reference is a fused
+##                          two-unit protein they tile on.
+##                          Every reference hit by two pieces is checked, including
+##                          the hits the fragment filter drops (a piece covering
+##                          > 85% of a reference is a complete copy of it) -- the
+##                          tiling test rejects an overlap on one reference but
+##                          never looks at the others; this flag does.
+##                          The qcov condition keeps shared domains out (two genes
+##                          aligning 20% of themselves to one kinase domain are
+##                          not copies). Risk: a real gene with internal repeats,
+##                          cut so that each piece carries some repeats, can also
+##                          overlap on a short single-repeat reference.
+##                          Example (Congeria merge_468): pieces of 617 and 609 aa
+##                          tile on a fused 1225 aa Dreissena protein (gap 15) but
+##                          each covers ~99% of two single-unit Dreissena proteins,
+##                          on the same residues.
+##                          In skip_flags by default.
+##
+##     JUNCTION_OVERHANG  : at some junction a piece extends more than end_tol aa
+##                          (default 30) past its alignment on that junction's
+##                          tiling reference, on the junction side: sequence the
+##                          reference lacks at the break (a mispredicted exon at
+##                          the break, or two different proteins).
 ##
 ##     SKIPPED_GENE       : a non-adjacent gene sits inside the merge locus
 ##                          (genomic_dist > 1 for at least one junction) AND at
@@ -369,6 +420,8 @@ use Getopt::Long qw(GetOptions);
 ##                          they require transcript-level evidence to validate.
 ##                          Review isoform structure in a genome browser before
 ##                          relying on isoform-level annotations from this merge.
+##                          The miniprot rebuild (step 6) keeps one transcript and
+##                          records the unused source isoforms (isoforms_not_used=).
 ##
 ##     LARGE_SPAN         : the total genomic footprint of the merged locus
 ##                          exceeds large_span_warn (default 500 kb). Biologically
@@ -408,7 +461,7 @@ use Getopt::Long qw(GetOptions);
 ##                          pident: low identity (<30%) on a single hit is a red
 ##                          flag for domain-sharing false positives.
 ##
-##                          Recommended action: inspect hit_desc and pident. If
+##                          Recommended action: inspect tiling_ref_desc and pident. If
 ##                          the hit is a well-described single-copy gene with
 ##                          strong evalue, proceed. If the hit is a generic domain
 ##                          protein with low pident, require IsoSeq confirmation.
@@ -448,7 +501,7 @@ use Getopt::Long qw(GetOptions);
 ##                                via shared Cys-loop fold on a third reference).
 ##
 ##                          Key diagnostic: if the gene flanking the ? junction has
-##                          "?" in the evalues column vs the chain best_hit, that
+##                          "?" in the evalues column vs the chain tiling_ref, that
 ##                          gene has no direct evidence against the chain's own
 ##                          reference protein — a strong signal it does not belong.
 ##                          Also check that descriptions on both sides of the ?
@@ -469,7 +522,10 @@ use Getopt::Long qw(GetOptions);
 ##     SINGLE_HIT         : all junctions have exactly 1 tiling hit.
 ##                          Same interpretation caveats as for 2-gene pairs above.
 ##
-##     LOW_COV            : best_combined_cov_pct < 60%
+##     LOW_COV            : tiling_cov_pct < 60%
+##
+##     PIECES_OVERLAP     : two pieces (any two, not only neighbours) align to the
+##                          same region of some reference. See the definition above.
 ##
 ##     SKIPPED_GENE       : at least one junction spans a non-adjacent same-strand
 ##                          gene. See SKIPPED_GENE description in the 2-gene section.
@@ -485,7 +541,7 @@ use Getopt::Long qw(GetOptions);
 ##                                       safe to merge (spanning_rescue can help)
 ##     STRONG,TRANSITIVE_JOIN         -> inspect the ? junction carefully;
 ##                                       require IsoSeq if possible
-##     SINGLE_HIT                     -> inspect hit_desc and pident; see above
+##     SINGLE_HIT                     -> inspect tiling_ref_desc and pident; see above
 ##     SINGLE_HIT,TRANSITIVE_JOIN     -> high risk; require IsoSeq FULL_SPAN
 ##     WEAK_END,LOW_COV               -> low confidence; review carefully
 ##     STRONG,LOW_COV                 -> protein evidence consistent but incomplete;
@@ -493,6 +549,8 @@ use Getopt::Long qw(GetOptions);
 ##     LARGE_SPAN,SINGLE_HIT          -> high FP risk; require IsoSeq
 ##     LARGE_SPAN_EXTREME             -> add to skip_flags unless IsoSeq confirms
 ##     MULTI_ISOFORM_JOIN             -> merge proceeds; verify transcript structure
+##     PIECES_OVERLAP (any others)    -> likely tandem copies, not a split gene;
+##                                       skipped by default, review by eye
 ##
 ## =============================================================================
 
@@ -502,10 +560,12 @@ my $large_span_extreme = 2000000;  # bp: flag LARGE_SPAN_EXTREME above this
 my $wiggle         = 15;  # aa wiggle room for tiling junction
 my $max_dist       =  4;  # max genomic rank distance between gene pair
 my $asym_threshold =  6;  # min hits on strong side to trigger trim/split
-my $low_cov_thresh = 60;  # combined_cov_pct below this gets LOW_COV flag
+my $low_cov_thresh = 60;  # tiling_cov_pct below this gets LOW_COV flag
 my $max_evalue     = 1e-20;  # a fragment hit must have evalue <= this
 my $frag_min_qcov  = 60;  # a fragment must align over >= this % of ITSELF (qcovhsp)
 my $end_tol        = 30;  # aa a fragment may extend past its alignment at the junction side
+my $overlap_min_frac = 0.5;  # PIECES_OVERLAP: overlap >= this fraction of the shorter alignment
+my $overlap_min_qcov = 60;   # PIECES_OVERLAP: each piece aligns over >= this % of ITSELF there
 
 GetOptions(
     "no_asym_trim"         => \$no_asym_trim,
@@ -518,13 +578,17 @@ GetOptions(
     "max_evalue=f"         => \$max_evalue,
     "frag_min_qcov=f"      => \$frag_min_qcov,
     "end_tol=i"            => \$end_tol,
-) or die "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] " .
-         "[--max_dist N] [--wiggle N] [--asym_threshold N] [--low_cov_thresh N] " .
-         "[--max_evalue E] [--frag_min_qcov N] [--end_tol N] blast gff subject_fa query_fa\n";
+    "overlap_min_frac=f"   => \$overlap_min_frac,
+    "overlap_min_qcov=f"   => \$overlap_min_qcov,
+) or die usage_text();
 
-my $usage_str = "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] " .
-                "[--max_dist N] [--wiggle N] [--asym_threshold N] [--low_cov_thresh N] " .
-                "[--max_evalue E] [--frag_min_qcov N] [--end_tol N] blast gff subject_fa query_fa\n";
+sub usage_text {
+    return "usage: $0 [--no_asym_trim] [--large_span_warn N] [--large_span_extreme N] " .
+           "[--max_dist N] [--wiggle N] [--asym_threshold N] [--low_cov_thresh N] " .
+           "[--max_evalue E] [--frag_min_qcov N] [--end_tol N] " .
+           "[--overlap_min_frac F] [--overlap_min_qcov N] blast gff subject_fa query_fa\n";
+}
+my $usage_str = usage_text();
 my $blast      = shift or die $usage_str;
 my $gff        = shift or die $usage_str;
 my $subject_fa = shift or die $usage_str;
@@ -533,7 +597,7 @@ my $strong_thresh  =  3;  # min junction hits for STRONG flag
 my $frag_scov_max  = 85;  # scovhsp <= this is always a fragment candidate
 my $frag_qcov_min  = 90;  # qcovhsp >= this enables the soft scovhsp extension
 my $frag_scov_soft = 90;  # with qcovhsp >= frag_qcov_min, keep if scovhsp < this
-my $max_ref_candidates = 10;  # ranked reference proteins written per merge (ref_candidates)
+my $max_ref_candidates = 10;  # ranked reference proteins written per merge (rebuild_candidates)
 
 # ---------------------------------------------------------------------------
 # Load reference protein descriptions from subject fasta headers
@@ -629,7 +693,7 @@ sub by_start_then_id($$) {
 sub by_number_ascending($$)  { my ($left, $right) = @_; return $left <=> $right }
 sub by_number_descending($$) { my ($left, $right) = @_; return $right <=> $left }
 sub by_pct_descending($$)    { my ($left, $right) = @_; return $right->{pct} <=> $left->{pct} }
-sub by_best_pct_descending($$)   { my ($left, $right) = @_; return $right->{best_pct} <=> $left->{best_pct} }
+sub by_tiling_pct_descending($$) { my ($left, $right) = @_; return $right->{tiling_pct} <=> $left->{tiling_pct} }
 sub by_num_tiling_descending($$) { my ($left, $right) = @_; return $right->{num_tiling} <=> $left->{num_tiling} }
 
 # the first element of a sorted copy (sort in list context, then take [0])
@@ -685,9 +749,14 @@ print STDERR "Genes in rank: ",         scalar @all_sorted,  "\n";
 #     stores the best-coverage hit per gene per subject protein
 #   gene_hits{gene}{hit} = 1
 #     inverted index for fast intersection when finding shared hits
+#   copy_hsp{gene}{hit} = {bits, sstart, send}
+#     every hit (fragment filter or not) where the gene aligns over
+#     >= overlap_min_qcov of itself, best bitscore per gene and subject;
+#     used only by the PIECES_OVERLAP check
 # ---------------------------------------------------------------------------
 my %subjects;
 my %gene_hits;
+my %copy_hsp;
 my %subject_len;  # subject_id -> length in aa (from slen field)
 
 open BLAST, $blast or die "cant open blast output: $blast $!\n";
@@ -701,6 +770,13 @@ while (my $line = <BLAST>){
     # resolve transcript to gene level
     my $gene_id = $isoforms{$query} // $query;
     $subject_len{$subject} = $slen;
+
+    # PIECES_OVERLAP evidence, taken before the fragment filter: a piece covering
+    # > 85% of a reference is a complete copy of it, which is what this check needs
+    if ($evalue <= $max_evalue && defined $qcovhsp && $qcovhsp >= $overlap_min_qcov
+        && (!exists $copy_hsp{$gene_id}{$subject} || $bitscore > $copy_hsp{$gene_id}{$subject}{bits})) {
+        $copy_hsp{$gene_id}{$subject} = { bits => $bitscore, sstart => $sstart, send => $send };
+    }
 
     # ---------------------------------------------------------------------------
     # FRAGMENT FILTER
@@ -766,8 +842,8 @@ print SUMMARY join("\t",
     "g1_coord", "g2_coord",
     "genomic_dist",
     "g1_desc", "g2_desc",
-    "best_hit", "hit_desc",
-    "combined_cov_pct",
+    "tiling_ref", "tiling_ref_desc",
+    "tiling_cov_pct",
     "tiling_gap",
     "g1_subj", "g2_subj",
     "g1_cov", "g2_cov",
@@ -778,8 +854,8 @@ print SUMMARY join("\t",
 print DETAIL join("\t",
     "g1", "g2",
     "genomic_dist",
-    "hit", "hit_desc",
-    "combined_cov_pct",
+    "tiling_ref", "tiling_ref_desc",
+    "tiling_cov_pct",
     "tiling_gap",
     "g1_subj", "g2_subj",
     "g1_cov", "g2_cov",
@@ -822,9 +898,9 @@ for my $i (0 .. $#all_sorted - 1) {
         @shared = sort @shared;   # sorted: ties never depend on hash order
         next unless @shared;
 
-        my $best_hit      = undef;
-        my $best_pct      = 0;
-        my $best_gap      = undef;
+        my $tiling_ref    = undef;
+        my $tiling_pct    = 0;
+        my $tiling_gap    = undef;
         my $best_g1_range = undef;
         my $best_g2_range = undef;
         my $best_g1_cov   = undef;
@@ -893,13 +969,13 @@ for my $i (0 .. $#all_sorted - 1) {
 
             # best = highest combined coverage; ties by summed evalue, then subject id
             my $ev_sum = $subjects{$hit}{$g1}{evalue} + $subjects{$hit}{$g2}{evalue};
-            if (!defined $best_hit || $pct > $best_pct
-                || ($pct == $best_pct && $ev_sum < $best_ev_sum)) {
+            if (!defined $tiling_ref || $pct > $tiling_pct
+                || ($pct == $tiling_pct && $ev_sum < $best_ev_sum)) {
                 $best_ev_sum   = $ev_sum;
                 $best_overhang = $overhang;
-                $best_pct      = $pct;
-                $best_hit      = $hit;
-                $best_gap      = $gap;
+                $tiling_pct    = $pct;
+                $tiling_ref    = $hit;
+                $tiling_gap    = $gap;
                 $best_g1_range = "$s1-$e1";
                 $best_g2_range = "$s2-$e2";
                 $best_g1_cov   = $subjects{$hit}{$g1}{cov};
@@ -909,21 +985,21 @@ for my $i (0 .. $#all_sorted - 1) {
             }
         }
 
-        next unless defined $best_hit;
+        next unless defined $tiling_ref;
 
         my $gdist    = $j - $i;
         my $g1_desc  = $desc{$g1} // "?";
         my $g2_desc  = $desc{$g2} // "?";
-        my $hit_desc = $desc{$best_hit} // "?";
+        my $tiling_ref_desc = $desc{$tiling_ref} // "?";
 
         print SUMMARY join("\t",
             $g1, $g2,
             $locs{$g1}{coord}, $locs{$g2}{coord},
             $gdist,
             $g1_desc, $g2_desc,
-            $best_hit, $hit_desc,
-            sprintf("%.1f", $best_pct),
-            $best_gap,
+            $tiling_ref, $tiling_ref_desc,
+            sprintf("%.1f", $tiling_pct),
+            $tiling_gap,
             $best_g1_range, $best_g2_range,
             $best_g1_cov, $best_g2_cov,
             $best_g1_eval, $best_g2_eval,
@@ -949,10 +1025,9 @@ for my $i (0 .. $#all_sorted - 1) {
             g1         => $g1,
             g2         => $g2,
             gdist      => $gdist,
-            best_hit   => $best_hit,
-            hit_desc   => $hit_desc,
-            best_pct   => $best_pct,
-            best_gap   => $best_gap,
+            tiling_ref => $tiling_ref,
+            tiling_pct => $tiling_pct,
+            tiling_gap => $tiling_gap,
             g1_cov     => $best_g1_cov,
             g2_cov     => $best_g2_cov,
             g1_eval    => $best_g1_eval,
@@ -1143,9 +1218,9 @@ sub refine_chain {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: rank the reference proteins of a chain. The top one is the chain's
-# best_hit; the ranked list (ref_candidates) is what rebuild_with_miniprot.pl
-# tries, in order, to rebuild the merged gene.
+# Helper: rank the reference proteins of a chain. The ranked list
+# (rebuild_candidates) is what rebuild_with_miniprot.pl tries, in order, to
+# rebuild the merged gene.
 #   1. most chain genes hit (the evidence that joins them)
 #   2. identity-weighted coverage: the fraction of the reference's residues
 #      aligned identically by the chain's fragments, sum(pident * aligned span)
@@ -1205,10 +1280,40 @@ sub rank_chain_references {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: PIECES_OVERLAP -- do two pieces of a merge align to the same region of
+# some reference? Pieces of one split gene sit side by side on every reference;
+# copies of one gene unit sit on top of each other. Uses copy_hsp (hits where a
+# piece aligns over >= overlap_min_qcov of itself, fragment filter or not).
+# Returns the first such reference (sorted ids), or undef.
+# ---------------------------------------------------------------------------
+sub pieces_overlap_ref {
+    my @genes = @_;
+    for my $i (0 .. $#genes - 1) {
+        my $left_hits = $copy_hsp{ $genes[$i] } or next;
+        for my $j ($i + 1 .. $#genes) {
+            my $right_hits = $copy_hsp{ $genes[$j] } or next;
+            for my $hit (sort keys %$left_hits) {
+                my $right = $right_hits->{$hit} or next;
+                my $left  = $left_hits->{$hit};
+                my $from    = $left->{sstart} > $right->{sstart} ? $left->{sstart} : $right->{sstart};
+                my $to      = $left->{send}   < $right->{send}   ? $left->{send}   : $right->{send};
+                my $overlap = $to - $from + 1;
+                next if $overlap <= 0;
+                my $left_len  = $left->{send}  - $left->{sstart}  + 1;
+                my $right_len = $right->{send} - $right->{sstart} + 1;
+                my $shorter   = $left_len < $right_len ? $left_len : $right_len;
+                return $hit if $overlap >= $overlap_min_frac * $shorter;
+            }
+        }
+    }
+    return undef;
+}
+
+# ---------------------------------------------------------------------------
 # Helper: compute flags for a merge row
 # ---------------------------------------------------------------------------
 sub compute_flags {
-    my ($ordered_ref, $best_pct) = @_;
+    my ($ordered_ref, $tiling_pct, $overlap_ref) = @_;
     my @ordered = @$ordered_ref;
     my @flags;
 
@@ -1225,7 +1330,10 @@ sub compute_flags {
     elsif ($chain_span > $large_span_warn)    { push @flags, "LARGE_SPAN"         }
 
     # LOW_COV applies to all chain sizes
-    push @flags, "LOW_COV" if $best_pct < $low_cov_thresh;
+    push @flags, "LOW_COV" if $tiling_pct < $low_cov_thresh;
+
+    # PIECES_OVERLAP: two pieces are copies of one gene unit (see pieces_overlap_ref)
+    push @flags, "PIECES_OVERLAP" if defined $overlap_ref;
 
     # SKIPPED_GENE / OPPOSITE_STRAND_SKIP: any junction with genomic dist > 1.
     # If ALL skipped genes are on the opposite strand from the chain, flag as
@@ -1330,9 +1438,9 @@ print MERGE join("\t",
     "coords_in_order",
     "ref",
     "gene_descs",
-    "best_hit", "hit_desc",
-    "best_combined_cov_pct",
-    "best_gap",
+    "tiling_ref", "tiling_ref_desc",
+    "tiling_cov_pct",
+    "tiling_gap",
     "evalues",
     "junction_tiling_hits",
     "junction_genomic_dist",
@@ -1340,13 +1448,14 @@ print MERGE join("\t",
     "max_tiling_hits",
     "num_pairs_in_chain",
     "flag",
-    "best_hit_id_cov",
-    "ref_candidates"
+    "rebuild_candidates",
+    "overlap_ref"
 ), "\n";
 
 my $merge_id   = 1;
 my $n_trimmed  = 0;
 my $n_split    = 0;
+my $n_overlap  = 0;
 
 # chains in genome order of their first gene
 for my $chain (@chains) {
@@ -1374,21 +1483,13 @@ for my $chain (sort by_chain_position @chains) {
         my @ordered = @$piece;
         my $ref     = $locs{ $ordered[0] }{ref};
 
-        # rank the reference proteins for this piece; the top one is its best hit
+        # rank the reference proteins for this piece: the rebuild candidates
         my @ranked_refs = rank_chain_references(\@ordered);
-        my $chain_best_hit = @ranked_refs ? $ranked_refs[0]{hit} : undef;
         my $last_ref = $#ranked_refs < $max_ref_candidates - 1 ? $#ranked_refs : $max_ref_candidates - 1;
-        my @ranked_refs_out = @ranked_refs[0 .. $last_ref];
         my @ranked_ids;
-        for my $ranked (@ranked_refs_out) { push @ranked_ids, $ranked->{hit} }
+        for my $ranked (@ranked_refs[0 .. $last_ref]) { push @ranked_ids, $ranked->{hit} }
 
-        # fall back to best pairwise hit if needed
-        unless (defined $chain_best_hit) {
-            my @by_pct = sort by_best_pct_descending @{ $chain->{pairs} };
-            $chain_best_hit = $by_pct[0]{best_hit};
-        }
-
-        # find best pairwise hit within this piece for coverage/gap reporting
+        # the best pair within this piece: its tiling reference, coverage and gap
         my %in_piece;
         for my $gene (@ordered) { $in_piece{$gene} = 1 }
         my @piece_pairs;
@@ -1396,8 +1497,9 @@ for my $chain (sort by_chain_position @chains) {
             push @piece_pairs, $pair if $in_piece{ $pair->{g1} } && $in_piece{ $pair->{g2} };
         }
 
-        my @pairs_by_pct = sort by_best_pct_descending (@piece_pairs ? @piece_pairs : @{ $chain->{pairs} });
-        my $best_pair = $pairs_by_pct[0];
+        my @pairs_by_pct = sort by_tiling_pct_descending (@piece_pairs ? @piece_pairs : @{ $chain->{pairs} });
+        my $best_pair  = $pairs_by_pct[0];
+        my $tiling_ref = $best_pair->{tiling_ref};
 
         my $max_tiling = $best_pair->{num_tiling};
         if (@piece_pairs) {
@@ -1410,7 +1512,7 @@ for my $chain (sort by_chain_position @chains) {
         for my $gene (@ordered) {
             push @coords, $locs{$gene}{coord};
             push @descs,  $desc{$gene} // "?";
-            push @evals,  $subjects{$chain_best_hit}{$gene}{evalue} // "?";
+            push @evals,  $subjects{$tiling_ref}{$gene}{evalue} // "?";
         }
         my $coord_list = join(",", @coords);
         my $desc_list  = join(",", @descs);
@@ -1430,11 +1532,12 @@ for my $chain (sort by_chain_position @chains) {
         my @skipped     = get_skipped_genes(@ordered);
         my $skipped_str = @skipped ? join(",", @skipped) : "none";
 
-        my $best_pct = $best_pair->{best_pct};
-        my $best_gap = $best_pair->{best_gap};
-        my $flag     = compute_flags(\@ordered, $best_pct) ;
+        my $tiling_pct  = $best_pair->{tiling_pct};
+        my $tiling_gap  = $best_pair->{tiling_gap};
+        my $overlap_ref = pieces_overlap_ref(@ordered);
+        $n_overlap++ if defined $overlap_ref;
+        my $flag = compute_flags(\@ordered, $tiling_pct, $overlap_ref);
         $flag = 'CLEAN' if $flag eq "";
-      
 
         print MERGE join("\t",
             "merge_$merge_id",
@@ -1443,10 +1546,10 @@ for my $chain (sort by_chain_position @chains) {
             $coord_list,
             $ref,
             $desc_list,
-            $chain_best_hit,
-            $desc{$chain_best_hit} // "?",
-            sprintf("%.1f", $best_pct),
-            $best_gap,
+            $tiling_ref,
+            $desc{$tiling_ref} // "?",
+            sprintf("%.1f", $tiling_pct),
+            $tiling_gap,
             $eval_list,
             $junc_str,
             $jdist_str,
@@ -1454,8 +1557,8 @@ for my $chain (sort by_chain_position @chains) {
             $max_tiling,
             scalar @ordered - 1,
             $flag,
-            ($ranked_refs_out[0] ? sprintf("%.3f", $ranked_refs_out[0]{id_cov}) : "?"),
-            (@ranked_refs_out ? join(",", @ranked_ids) : $chain_best_hit)
+            (@ranked_ids ? join(",", @ranked_ids) : $tiling_ref),
+            $overlap_ref // "."
         ), "\n";
 
         $merge_id++;
@@ -1470,3 +1573,4 @@ print STDERR "Chains before refine: ", scalar @chains,          "\n";
 print STDERR "Chains trimmed:       ", $n_trimmed,              "\n";
 print STDERR "Chains split:         ", $n_split,                "\n";
 print STDERR "Merge rows written:   ", $merge_id - 1,           "\n";
+print STDERR "PIECES_OVERLAP rows:  ", $n_overlap,              "\n";

@@ -84,7 +84,7 @@ sub by_genes_covered_then_read($$) {
 ##
 ##   perl merge_split_genes.pl \
 ##       --flags STRONG \
-##       --skip_flags SKIPPED_GENE,LOW_COV \
+##       --skip_flags SKIPPED_GENE,LOW_COV,PIECES_OVERLAP \
 ##       merge_candidates.txt \
 ##       input.gff \
 ##       output.gff

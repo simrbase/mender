@@ -14,29 +14,31 @@
 ## Column reference:
 ##   split_genes_summary.txt
 ##     1:g1  2:g2  3:g1_coord  4:g2_coord  5:genomic_dist
-##     6:g1_desc  7:g2_desc  8:best_hit  9:hit_desc
-##     10:combined_cov_pct  11:tiling_gap  12:g1_subj  13:g2_subj
+##     6:g1_desc  7:g2_desc  8:tiling_ref  9:tiling_ref_desc
+##     10:tiling_cov_pct  11:tiling_gap  12:g1_subj  13:g2_subj
 ##     14:g1_cov  15:g2_cov  16:g1_evalue  17:g2_evalue  18:num_tiling_hits
 ##
 ##   split_genes_detail.txt
-##     1:g1  2:g2  3:genomic_dist  4:hit  5:hit_desc
-##     6:combined_cov_pct  7:tiling_gap  8:g1_subj  9:g2_subj
+##     1:g1  2:g2  3:genomic_dist  4:tiling_ref  5:tiling_ref_desc
+##     6:tiling_cov_pct  7:tiling_gap  8:g1_subj  9:g2_subj
 ##     10:g1_cov  11:g2_cov  12:g1_evalue  13:g2_evalue
 ##
 ##   merge_candidates.txt
 ##     1:merge_id  2:num_genes  3:genes_in_order  4:coords_in_order  5:ref
-##     6:gene_descs  7:best_hit  8:hit_desc  9:best_combined_cov_pct
-##     10:best_gap  11:evalues  12:junction_tiling_hits
+##     6:gene_descs  7:tiling_ref  8:tiling_ref_desc  9:tiling_cov_pct
+##     10:tiling_gap  11:evalues  12:junction_tiling_hits
 ##     13:junction_genomic_dist  14:skipped_genes
 ##     15:max_tiling_hits  16:num_pairs_in_chain  17:flag
+##     18:rebuild_candidates  19:overlap_ref
 ##
 ##   isoseq_validated.txt (merge table + 3 extra columns)
 ##     1:merge_id  2:num_genes  3:genes_in_order  4:coords_in_order  5:ref
-##     6:gene_descs  7:best_hit  8:hit_desc  9:best_combined_cov_pct
-##     10:best_gap  11:evalues  12:junction_tiling_hits
+##     6:gene_descs  7:tiling_ref  8:tiling_ref_desc  9:tiling_cov_pct
+##     10:tiling_gap  11:evalues  12:junction_tiling_hits
 ##     13:junction_genomic_dist  14:skipped_genes
 ##     15:max_tiling_hits  16:num_pairs_in_chain  17:flag
-##     18:spanning_isoseq_count  19:spanning_isoseq_detail  20:isoseq_flag
+##     18:rebuild_candidates  19:overlap_ref
+##     20:spanning_isoseq_count  21:spanning_isoseq_detail  22:isoseq_flag
 ##
 ## ============================================================
 
@@ -84,13 +86,13 @@ awk -F'\t' 'NR>1 && $5>1' split_genes_summary.txt | wc -l
 
 echo ""
 echo "--- Top 10 pairs by num_tiling_hits ---"
-echo "g1 | g2 | hit_desc | combined_cov_pct | tiling_gap | num_tiling_hits"
+echo "g1 | g2 | tiling_ref_desc | tiling_cov_pct | tiling_gap | num_tiling_hits"
 sort -t$'\t' -k18 -rn split_genes_summary.txt | \
     awk -F'\t' 'NR>1 {print $1"\t"$2"\t"$9"\t"$10"\t"$11"\t"$18}' | head -10
 
 echo ""
-echo "--- Top 10 pairs by combined_cov_pct ---"
-echo "g1 | g2 | hit_desc | combined_cov_pct | num_tiling_hits"
+echo "--- Top 10 pairs by tiling_cov_pct ---"
+echo "g1 | g2 | tiling_ref_desc | tiling_cov_pct | num_tiling_hits"
 sort -t$'\t' -k10 -rn split_genes_summary.txt | \
     awk -F'\t' 'NR>1 {print $1"\t"$2"\t"$9"\t"$10"\t"$18}' | head -10
 
@@ -117,7 +119,8 @@ echo "STRONG        = all junctions >= 3 hits (chains only)"
 echo "SINGLE_HIT    = all junctions have exactly 1 tiling hit"
 echo "WEAK_END      = low-evidence terminal junction survived trimming"
 echo "WEAK_INTERNAL = low-evidence internal junction survived splitting"
-echo "LOW_COV       = combined coverage < 60%"
+echo "LOW_COV       = tiling_cov_pct < 60%"
+echo "PIECES_OVERLAP = two pieces align to the same region of some reference (copies)"
 echo "SKIPPED_GENE  = a non-adjacent gene sits inside this merge locus"
 echo ""
 echo "Note: '?' in junction_tiling_hits means two consecutive genes in the chain"
@@ -134,7 +137,7 @@ awk -F'\t' 'NR>1 && $17~/STRONG/' merge_candidates.txt | wc -l
 
 echo ""
 echo "--- Top 20 STRONG candidates by max_tiling_hits ---"
-echo "merge_id | num_genes | hit_desc | combined_cov | junction_hits | max_tiling | flag"
+echo "merge_id | num_genes | tiling_ref_desc | tiling_cov | junction_hits | max_tiling | flag"
 awk -F'\t' 'NR>1 && $17~/STRONG/' merge_candidates.txt | \
     sort -t$'\t' -k15 -rn | \
     awk -F'\t' '{print $1"\t"$2"\t"$8"\t"$9"\t"$12"\t"$15"\t"$17}' | head -20
@@ -146,7 +149,7 @@ awk -F'\t' 'NR>1 && $2 > 2' merge_candidates.txt | wc -l
 
 echo ""
 echo "--- Multi-gene chains that are STRONG ---"
-echo "merge_id | num_genes | hit_desc | combined_cov | junction_hits | junction_dists | max_tiling | flag"
+echo "merge_id | num_genes | tiling_ref_desc | tiling_cov | junction_hits | junction_dists | max_tiling | flag"
 awk -F'\t' 'NR>1 && $2 > 2 && $17~/STRONG/' merge_candidates.txt | \
     cut -f1,2,8,9,12,13,15,17
 
@@ -158,7 +161,7 @@ awk -F'\t' 'NR>1 && $17~/SKIPPED_GENE/' merge_candidates.txt | wc -l
 
 echo ""
 echo "--- SKIPPED_GENE candidates with STRONG protein evidence ---"
-echo "merge_id | num_genes | hit_desc | combined_cov | skipped_genes | max_tiling | flag"
+echo "merge_id | num_genes | tiling_ref_desc | tiling_cov | skipped_genes | max_tiling | flag"
 awk -F'\t' 'NR>1 && $17~/STRONG/ && $17~/SKIPPED_GENE/' merge_candidates.txt | \
     cut -f1,2,8,9,14,15,17
 
@@ -169,13 +172,13 @@ awk -F'\t' 'NR>1 && $17~/WEAK_END/' merge_candidates.txt | wc -l
 
 echo ""
 echo "--- Junction tiling hits for all multi-gene chains ---"
-echo "merge_id | num_genes | hit_desc | junction_hits | junction_dists | max_tiling | flag"
+echo "merge_id | num_genes | tiling_ref_desc | junction_hits | junction_dists | max_tiling | flag"
 awk -F'\t' 'NR>1 && $2 > 2' merge_candidates.txt | \
     cut -f1,2,8,12,13,15,17 | head -30
 
 echo ""
 echo "--- Chains with internal 1-hit junctions (potential mis-chaining) ---"
-echo "Format: merge_id | num_genes | hit_desc | junction_hits | junction_dists | flag"
+echo "Format: merge_id | num_genes | tiling_ref_desc | junction_hits | junction_dists | flag"
 awk -F'\t' 'NR>1 && $12!="NA"' merge_candidates.txt | \
     awk -F'\t' '{
         n=split($12,a,"|");
@@ -193,16 +196,16 @@ echo "Two consecutive genes joined by no direct tiling pair."
 echo "They connected via a shared neighbor gene, not a direct protein hit."
 echo "Causes: different reference proteins (empty hit intersection), or"
 echo "heavy alignment overlap on the same reference (gap >> wiggle)."
-echo "Format: merge_id | num_genes | hit_desc | junction_hits | max_tiling | flag"
+echo "Format: merge_id | num_genes | tiling_ref_desc | junction_hits | max_tiling | flag"
 awk -F'\t' 'NR>1 && $12~/\?/' merge_candidates.txt | \
     cut -f1,2,8,12,15,17
 
 echo ""
-echo "--- Chains where a terminal gene has no hit to the chain's best reference ---"
+echo "--- Chains where a terminal gene has no hit to the chain's tiling_reference ---"
 echo "? in the evalue column means that gene contributed NO direct tiling evidence"
-echo "to the chain's best reference protein. It joined via a different protein entirely."
+echo "to the chain's tiling_reference protein. It joined via a different protein entirely."
 echo "This is the strongest indicator that a terminal gene may not belong in the merge."
-echo "Format: merge_id | num_genes | hit_desc | evalues | junction_hits | flag"
+echo "Format: merge_id | num_genes | tiling_ref_desc | evalues | junction_hits | flag"
 awk -F'\t' 'NR>1' merge_candidates.txt | awk -F'\t' '{
     n=split($11,ev,",");
     if (ev[1]=="?" || ev[n]=="?")
@@ -225,8 +228,8 @@ echo "--- Unique gene pairs with detail records ---"
 awk -F'\t' 'NR>1 {print $1"\t"$2}' split_genes_detail.txt | sort -u | wc -l
 
 echo ""
-echo "--- Top 10 hits by combined_cov_pct across all pairs ---"
-echo "g1 | g2 | hit_desc | combined_cov_pct | tiling_gap"
+echo "--- Top 10 hits by tiling_cov_pct across all pairs ---"
+echo "g1 | g2 | tiling_ref_desc | tiling_cov_pct | tiling_gap"
 sort -t$'\t' -k6 -rn split_genes_detail.txt | \
     awk -F'\t' 'NR>1 {print $1"\t"$2"\t"$5"\t"$6"\t"$7}' | head -10
 
@@ -247,12 +250,12 @@ echo "               meaningful even with stage-specific IsoSeq — a read long"
 echo "               enough to span genes 1+2 should also cross gene 3 if they"
 echo "               are truly one transcriptional unit"
 echo "none         = no spanning reads found (may just be expression stage)"
-awk -F'\t' 'NR>1 {print $20}' isoseq_validated.txt | sort | uniq -c
+awk -F'\t' 'NR>1 {print $22}' isoseq_validated.txt | sort | uniq -c
 
 echo ""
 echo "--- Spanning read count distribution ---"
 echo "How many candidates have how many spanning reads"
-awk -F'\t' 'NR>1 {print $18}' isoseq_validated.txt | sort -n | uniq -c | head -20
+awk -F'\t' 'NR>1 {print $20}' isoseq_validated.txt | sort -n | uniq -c | head -20
 
 echo ""
 echo "--- Flag distribution in validated merge ---"
@@ -261,75 +264,75 @@ awk -F'\t' 'NR>1 {print $17}' isoseq_validated.txt | sort | uniq -c | sort -rn
 echo ""
 echo "--- Candidates by flag + isoseq_flag combination ---"
 echo "Shows full picture of protein evidence vs IsoSeq evidence"
-awk -F'\t' 'NR>1 {print $17"\t"$20}' isoseq_validated.txt | \
+awk -F'\t' 'NR>1 {print $17"\t"$22}' isoseq_validated.txt | \
     sort | uniq -c | sort -rn | head -20
 
 echo ""
 echo "--- Gold standard candidates ---"
 echo "STRONG protein + FULL_SPAN IsoSeq + >=3 spanning reads + >=80% coverage"
-awk -F'\t' 'NR>1 && $17~/STRONG/ && $9+0>=80 && $20=="FULL_SPAN" && $18+0>=3' \
+awk -F'\t' 'NR>1 && $17~/STRONG/ && $9+0>=80 && $22=="FULL_SPAN" && $20+0>=3' \
     isoseq_validated.txt | wc -l
 
 echo ""
 echo "--- Gold standard list sorted by spanning read count ---"
-echo "merge_id | num_genes | hit_desc | combined_cov | max_tiling | flag | spanning | isoseq_flag"
-awk -F'\t' 'NR>1 && $17~/STRONG/ && $9+0>=80 && $20=="FULL_SPAN" && $18+0>=3' \
-    isoseq_validated.txt | sort -t$'\t' -k18 -rn | \
-    cut -f1,2,8,9,15,17,18,20 | head -30
+echo "merge_id | num_genes | tiling_ref_desc | tiling_cov | max_tiling | flag | spanning | isoseq_flag"
+awk -F'\t' 'NR>1 && $17~/STRONG/ && $9+0>=80 && $22=="FULL_SPAN" && $20+0>=3' \
+    isoseq_validated.txt | sort -t$'\t' -k20 -rn | \
+    cut -f1,2,8,9,15,17,20,22 | head -30
 
 echo ""
 echo "--- Recommended merge set (what merge_split_genes.pl would process) ---"
-echo "FULL_SPAN or none isoseq, skip SKIPPED_GENE and LOW_COV"
-awk -F'\t' 'NR>1 && $17!~/SKIPPED_GENE/ && $17!~/LOW_COV/' \
+echo "FULL_SPAN or none isoseq, skip SKIPPED_GENE, LOW_COV and PIECES_OVERLAP"
+awk -F'\t' 'NR>1 && $17!~/SKIPPED_GENE/ && $17!~/LOW_COV/ && $17!~/PIECES_OVERLAP/' \
     isoseq_validated.txt | wc -l
 
 echo ""
 echo "--- Breakdown of recommended set by isoseq_flag ---"
-awk -F'\t' 'NR>1 && $17!~/SKIPPED_GENE/ && $17!~/LOW_COV/' \
-    isoseq_validated.txt | awk -F'\t' '{print $20}' | sort | uniq -c
+awk -F'\t' 'NR>1 && $17!~/SKIPPED_GENE/ && $17!~/LOW_COV/ && $17!~/PIECES_OVERLAP/' \
+    isoseq_validated.txt | awk -F'\t' '{print $22}' | sort | uniq -c
 
 echo ""
 echo "--- PARTIAL_SPAN cases — terminal gene may not belong in merge ---"
 echo "Especially important when protein flag is also STRONG"
-echo "merge_id | num_genes | genes | hit_desc | max_tiling | flag | spanning_count | isoseq_flag"
-awk -F'\t' 'NR>1 && $20=="PARTIAL_SPAN"' isoseq_validated.txt | \
-    cut -f1,2,3,8,15,17,18,20
+echo "merge_id | num_genes | genes | tiling_ref_desc | max_tiling | flag | spanning_count | isoseq_flag"
+awk -F'\t' 'NR>1 && $22=="PARTIAL_SPAN"' isoseq_validated.txt | \
+    cut -f1,2,3,8,15,17,20,22
 
 echo ""
-echo "--- WEAK_END chains where the terminal gene has no hit to chain's best ref ---"
+echo "--- WEAK_END chains where the terminal gene has no hit to chain's tiling_ref ---"
 echo "These are the highest priority WEAK_END cases: protein evidence AND"
 echo "evalue both say the terminal gene does not belong. Manual review recommended."
-echo "Format: merge_id | num_genes | hit_desc | evalues | junction_hits | flag | isoseq_flag"
+echo "Format: merge_id | num_genes | tiling_ref_desc | evalues | junction_hits | flag | isoseq_flag"
 awk -F'\t' 'NR>1 && $17~/WEAK_END/' isoseq_validated.txt | awk -F'\t' '{
     n=split($11,ev,",");
     if (ev[1]=="?" || ev[n]=="?")
-        print $1"\t"$2"\t"$8"\t"$11"\t"$12"\t"$17"\t"$20
+        print $1"\t"$2"\t"$8"\t"$11"\t"$12"\t"$17"\t"$22
 }'
 
 echo ""
 echo "--- STRONG protein but PARTIAL_SPAN IsoSeq ---"
 echo "These are your highest priority manual review cases"
 echo "Protein says merge all genes, IsoSeq says a terminal gene may not belong"
-awk -F'\t' 'NR>1 && $17~/STRONG/ && $20=="PARTIAL_SPAN"' isoseq_validated.txt | \
-    cut -f1,2,3,8,9,15,17,18,20
+awk -F'\t' 'NR>1 && $17~/STRONG/ && $22=="PARTIAL_SPAN"' isoseq_validated.txt | \
+    cut -f1,2,3,8,9,15,17,20,22
 
 echo ""
 echo "--- Multi-gene chains with IsoSeq support ---"
-echo "merge_id | num_genes | hit_desc | junction_hits | max_tiling | flag | spanning | isoseq_flag"
-awk -F'\t' 'NR>1 && $2>2 && $18+0>0' isoseq_validated.txt | \
-    sort -t$'\t' -k18 -rn | \
-    cut -f1,2,8,12,15,17,18,20 | head -20
+echo "merge_id | num_genes | tiling_ref_desc | junction_hits | max_tiling | flag | spanning | isoseq_flag"
+awk -F'\t' 'NR>1 && $2>2 && $20+0>0' isoseq_validated.txt | \
+    sort -t$'\t' -k20 -rn | \
+    cut -f1,2,8,12,15,17,20,22 | head -20
 
 echo ""
 echo "--- Candidates without IsoSeq support ---"
 echo "May still be real — check if gene is expressed in your IsoSeq stage"
-awk -F'\t' 'NR>1 && $18==0' isoseq_validated.txt | wc -l
+awk -F'\t' 'NR>1 && $20==0' isoseq_validated.txt | wc -l
 
 echo ""
 echo "--- SKIPPED_GENE in validated merge ---"
-echo "merge_id | num_genes | hit_desc | skipped_genes | max_tiling | flag | spanning | isoseq_flag"
+echo "merge_id | num_genes | tiling_ref_desc | skipped_genes | max_tiling | flag | spanning | isoseq_flag"
 awk -F'\t' 'NR>1 && $17~/SKIPPED_GENE/' isoseq_validated.txt | \
-    cut -f1,2,8,14,15,17,18,20 | head -20
+    cut -f1,2,8,14,15,17,20,22 | head -20
 
 echo ""
 echo "============================================================"
@@ -344,16 +347,16 @@ echo "--- Find a gene in all files ---"
 echo "  grep CCA3gXXXXXX split_genes_summary.txt"
 echo "  grep CCA3gXXXXXX split_genes_detail.txt"
 echo "  grep CCA3gXXXXXX merge_candidates.txt"
-echo "  grep CCA3gXXXXXX isoseq_validated.txt | cut -f1,2,3,8,15,17,18,20"
+echo "  grep CCA3gXXXXXX isoseq_validated.txt | cut -f1,2,3,8,15,17,20,22"
 
 echo ""
 echo "--- Find a gene by name ---"
 echo "  grep GENENAME merge_candidates.txt | cut -f1,2,3,8,9,12,13,14,15,17"
-echo "  grep GENENAME isoseq_validated.txt   | cut -f1,2,3,8,15,17,18,20"
+echo "  grep GENENAME isoseq_validated.txt   | cut -f1,2,3,8,15,17,20,22"
 
 echo ""
 echo "--- Trace a merge through all files ---"
-echo "  grep ^merge_NNN  isoseq_validated.txt | cut -f1,2,3,8,15,17,18,20"
+echo "  grep ^merge_NNN  isoseq_validated.txt | cut -f1,2,3,8,15,17,20,22"
 echo "  grep merge_id=merge_NNN merges.gff | cut -f1,3,4,5,9"
 echo "  grep ^merge_NNN  new_merges.log"
 
@@ -387,14 +390,14 @@ echo "======================================================================"
 echo ""
 echo "--- How many chains have WEAK_END with a truly 1-hit terminal? ---"
 echo "  (These are the chains that WOULD be trimmed if asym_trim=yes)"
-echo "  awk -F'\t' 'NR>1 && \$NF~/WEAK_END/ {                             \\"
+echo "  awk -F'\t' 'NR>1 && \$17~/WEAK_END/ {                             \\"
 echo "    split(\$12,h,\"|\"); n=length(h); max=0;                          \\"
 echo "    for(i=1;i<=n;i++) if(h[i]+0>max) max=h[i];                       \\"
 echo "    if ((h[1]==1 || h[n]==1) && max>=6) c++                           \\"
 echo "  } END{print c+0\" chains would be trimmed\"}' merge_candidates.txt"
 echo ""
 echo "--- List chains that would be trimmed (terminal hit=1, strong side>=6) ---"
-echo "  awk -F'\t' 'NR>1 && \$NF~/WEAK_END/ {                             \\"
+echo "  awk -F'\t' 'NR>1 && \$17~/WEAK_END/ {                             \\"
 echo "    split(\$12,h,\"|\"); n=length(h); max=0;                          \\"
 echo "    for(i=1;i<=n;i++) if(h[i]+0>max) max=h[i];                       \\"
 echo "    if ((h[1]==1 || h[n]==1) && max>=6)                               \\"
@@ -402,8 +405,8 @@ echo "      print \$3\"\t\"\$12\"\t\"\$NF\"\t\"\$8                         \\"
 echo "  }' merge_candidates.txt | column -t -s \$'\t'"
 echo ""
 echo "--- Compare WEAK_END counts: TRIM vs NOTRIM run ---"
-echo "  awk -F'\t' 'NR>1 && \$NF~/WEAK_END/{c++} END{print c\" WEAK_END\"}' merge_candidates.txt"
-echo "  awk -F'\t' 'NR>1 && \$NF~/WEAK_END/{c++} END{print c\" WEAK_END\"}' split_genes_merge.NOTRIM.txt"
+echo "  awk -F'\t' 'NR>1 && \$17~/WEAK_END/{c++} END{print c\" WEAK_END\"}' merge_candidates.txt"
+echo "  awk -F'\t' 'NR>1 && \$17~/WEAK_END/{c++} END{print c\" WEAK_END\"}' split_genes_merge.NOTRIM.txt"
 echo "  # NOTRIM should have more WEAK_END (chains with trimmed terminals retained)"
 echo "  # TRIM may have more total rows if splitting occurred (each split = +1 row)"
 
@@ -416,26 +419,26 @@ echo "These files are written to the run directory (results/<prefix>/)."
 echo "If running this script from the work subdirectory, prefix paths with ../"
 echo "or cd to the run directory first."
 echo ""
-echo "Column reference for report.tsv (17 columns):"
+echo "Column reference for report.tsv (18 columns):"
 echo "  1:merge_id              2:new_gene_id           3:source_genes"
 echo "  4:merged_protein_len    5:has_internal_stop     6:internal_stop_pos"
 echo "  7:merged_cov_by_ref     8:ref_cov_by_merged     9:best_ref_hit"
 echo "  10:best_ref_pident      11:ref_len              12:n_ref_hits"
-echo "  13:miniprot             14:translation_flag     15:source_flags"
-echo "  16:fail_reasons         17:overall_result"
+echo "  13:miniprot             14:rebuild_ref          15:translation_flag"
+echo "  16:source_flags         17:fail_reasons         18:overall_result"
 echo "======================================================================"
 
 REPORT="report.tsv"
 
 echo ""
 echo "--- Overall result distribution (PASS / FAIL / REVIEW) ---"
-awk -F'\t' 'NR>1 {print $17}' $REPORT | sort | uniq -c | sort -rn
+awk -F'\t' 'NR>1 {print $18}' $REPORT | sort | uniq -c | sort -rn
 
 echo ""
 echo "--- Translation flag distribution ---"
 echo "FRAMESHIFT_DETECTED = internal stop codon in merged CDS"
 echo "OK                  = clean translation"
-awk -F'\t' 'NR>1 {print $14}' $REPORT | sort | uniq -c | sort -rn
+awk -F'\t' 'NR>1 {print $15}' $REPORT | sort | uniq -c | sort -rn
 
 echo ""
 echo "--- miniprot rebuild (step 6) ---"
@@ -451,30 +454,30 @@ echo "FRAME_BREAK      = a fragment junction leaves the downstream fragment out 
 echo "NO_PROTEIN_SPAN  = miniprot NOT_SUPPORTED: the reference protein does not span the merge as one gene"
 echo "LOW_MERGED_COV   = merged protein covers < min_merged_cov of best reference hit"
 echo "NO_HIT           = no diamond hit found for merged protein"
-awk -F'\t' 'NR>1 && $16 != "." {print $16}' $REPORT | tr '|' '\n' | sort | uniq -c | sort -rn
+awk -F'\t' 'NR>1 && $17 != "." {print $17}' $REPORT | tr '|' '\n' | sort | uniq -c | sort -rn
 
 echo ""
 echo "--- FAIL candidates with internal stops ---"
 echo "merge_id | new_gene_id | source_genes | internal_stop_pos | source_flags | fail_reasons"
-awk -F'\t' 'NR>1 && $14=="FRAMESHIFT_DETECTED"' $REPORT | \
-    cut -f1,2,3,6,15,16 | head -20
+awk -F'\t' 'NR>1 && $15=="FRAMESHIFT_DETECTED"' $REPORT | \
+    cut -f1,2,3,6,16,17 | head -20
 
 echo ""
 echo "--- FAIL candidates by fail_reason (other than internal stops) ---"
 echo "merge_id | new_gene_id | merged_len | merged_cov_by_ref | ref_cov_by_merged | n_ref_hits | miniprot | fail_reasons"
-awk -F'\t' 'NR>1 && $17=="FAIL" && $14!="FRAMESHIFT_DETECTED"' $REPORT | \
-    cut -f1,2,4,7,8,12,13,16 | head -20
+awk -F'\t' 'NR>1 && $18=="FAIL" && $15!="FRAMESHIFT_DETECTED"' $REPORT | \
+    cut -f1,2,4,7,8,12,13,17 | head -20
 
 echo ""
 echo "--- REVIEW candidates (merged protein covers < min_ref_cov of its reference) ---"
 echo "merge_id | new_gene_id | merged_len | merged_cov_by_ref | ref_cov_by_merged | miniprot | source_flags"
-awk -F'\t' 'NR>1 && $17=="REVIEW"' $REPORT | \
-    cut -f1,2,4,7,8,13,15 | head -20
+awk -F'\t' 'NR>1 && $18=="REVIEW"' $REPORT | \
+    cut -f1,2,4,7,8,13,16 | head -20
 
 echo ""
 echo "--- Source flag vs overall_result breakdown ---"
 echo "Shows how protein-evidence flags from step 4/5 predict translation outcome"
-awk -F'\t' 'NR>1 {print $15"\t"$17}' $REPORT | \
+awk -F'\t' 'NR>1 {print $16"\t"$18}' $REPORT | \
     sort | uniq -c | sort -rn | head -30
 
 echo ""

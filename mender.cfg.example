@@ -200,20 +200,28 @@ fix_partial = yes
 ## Available flags:
 ##   SKIPPED_GENE         a non-adjacent gene sits inside the merge locus
 ##                        — review manually before merging (recommended to skip)
-##   LOW_COV              combined coverage < 60% — may be domain sharing, not a split gene
+##   LOW_COV              tiling_cov_pct < 60% — may be domain sharing, not a split gene
 ##                        — generally safe to skip
+##   PIECES_OVERLAP       two pieces align to the SAME region of some reference protein,
+##                        each over >= overlap_min_qcov of itself: copies of one gene unit
+##                        (tandem duplicates) joined only because another reference is a
+##                        fused two-unit protein — recommended to skip (default). The
+##                        reference is in the overlap_ref column. Risk: a real gene with
+##                        internal repeats, cut between repeats, can also be flagged.
+##   JUNCTION_OVERHANG    a piece extends > end_tol aa past its alignment at a junction
 ##   SINGLE_HIT           exactly 1 tiling hit at all junctions
 ##                        — this is a REVIEW flag, not a default skip. For single-copy
 ##                          genes in the reference, 1 hit is the expected maximum.
-##                          Inspect hit_desc and pident before deciding. Skip only if
+##                          Inspect tiling_ref_desc and pident before deciding. Skip only if
 ##                          the hit is against a generic multi-domain protein with low
 ##                          identity and you have no IsoSeq support.
 ##   TRANSITIVE_JOIN      consecutive genes in the chain have no direct tiling evidence;
 ##                        connection is inferred transitively. STRONG,TRANSITIVE_JOIN
 ##                        merges should be treated with caution — verify with IsoSeq.
-##   MULTI_ISOFORM_JOIN   at least one source gene has multiple transcripts; merged gene
-##                        will contain cross-product isoform combinations not all of
-##                        which may be real.
+##   MULTI_ISOFORM_JOIN   at least one source gene has multiple transcripts; the placeholder
+##                        has their cross-product; a gene rebuilt by miniprot keeps one
+##                        transcript (isoforms_not_used= lists the rest). Not every
+##                        cross-product transcript is real.
 ##   LARGE_SPAN           merged locus > large_span_warn (default 500kb)
 ##   LARGE_SPAN_EXTREME   merged locus > large_span_extreme (default 2Mb)
 ##                        — strongly recommended to skip unless IsoSeq confirms
@@ -223,13 +231,13 @@ fix_partial = yes
 ##   CLEAN                directly adjacent, 2+ hits, coverage >= 60% — no concerns flagged
 ##
 ## Conservative run (protein evidence only, no IsoSeq):
-##   skip_flags = SKIPPED_GENE,LOW_COV,SINGLE_HIT,TRANSITIVE_JOIN,LARGE_SPAN_EXTREME
+##   skip_flags = SKIPPED_GENE,LOW_COV,PIECES_OVERLAP,SINGLE_HIT,TRANSITIVE_JOIN,LARGE_SPAN_EXTREME
 ##
 ## Liberal run (then validate merges with the miniprot rebuild and translation step):
 ##   skip_flags = LOW_COV
 ##   (use the translation validation output to filter the result)
 ##
-skip_flags = SKIPPED_GENE,LOW_COV
+skip_flags = SKIPPED_GENE,LOW_COV,PIECES_OVERLAP
 
 ## spanning_rescue: if yes, rescue merges that would be excluded by skip_flags
 ## but have FULL_SPAN IsoSeq support. Rescue applies only when the blocking
@@ -266,7 +274,7 @@ flags = all
 ## and IsoSeq instead. Suggested: 1
 min_tiling = 1
 
-## min_cov: minimum combined_cov_pct to process a merge candidate.
+## min_cov: minimum tiling_cov_pct to process a merge candidate.
 ## 0 = no minimum. 60 would exclude LOW_COV cases (redundant if LOW_COV is
 ## already in skip_flags).
 min_cov = 0
@@ -327,9 +335,9 @@ wiggle = 15
 ## Default: 6
 asym_threshold = 6
 
-## low_cov_thresh: combined_cov_pct (the fraction of the reference protein
-## spanned by the two fragments together) below which the LOW_COV flag is
-## assigned. Pairs with very low combined coverage are more likely to reflect
+## low_cov_thresh: tiling_cov_pct (the fraction of the tiling reference protein,
+## tiling_ref, spanned by the two fragments together) below which the LOW_COV flag
+## is assigned. Pairs with very low combined coverage are more likely to reflect
 ## domain sharing than a genuine split gene. This controls the flag only —
 ## candidates are not removed unless LOW_COV is in skip_flags.
 ## Default: 60 (percent)
@@ -345,6 +353,14 @@ frag_min_qcov = 60
 # the merge is flagged JUNCTION_OVERHANG (sequence the reference lacks at the
 # break: a mispredicted exon, or two different proteins). Default 30.
 end_tol = 30
+
+# overlap_min_frac, overlap_min_qcov: the PIECES_OVERLAP flag. Two pieces of a
+# merge are flagged when, on some reference protein, their alignments overlap by
+# >= overlap_min_frac of the shorter alignment AND each piece aligns over
+# >= overlap_min_qcov % of itself there (so a shared domain is not enough).
+# Hits the fragment filter drops are checked too. Defaults 0.5 and 60.
+overlap_min_frac = 0.5
+overlap_min_qcov = 60
 
 ## ============================================================
 [validation]
@@ -399,14 +415,15 @@ run_agat = yes
 ## Step 6 rebuilds each merged gene from protein evidence: a reference protein
 ## the fragments tiled against is aligned across the merged locus with miniprot
 ## (spliced protein-to-genome alignment). The candidates are the merge's
-## ref_candidates (step 4 ranks them: most fragments hit, then identity-weighted
+## rebuild_candidates (step 4 ranks them: most fragments hit, then identity-weighted
 ## coverage, so a close reference comes first), tried in order until one is
-## SUPPORTED; a distant reference often makes spurious frameshifts. SUPPORTED (the alignment covers
+## SUPPORTED (reported as rebuild_ref in miniprot.tsv and report.tsv); a distant reference often makes spurious frameshifts. SUPPORTED (the alignment covers
 ## >= min_prot_cov of the protein and every source fragment, with no frameshift and
 ## no in-frame stop): the placeholder model is replaced by the miniprot model --
 ## real splice sites, a missing exon at the break recovered; when miniprot's model
 ## does not reach a start codon, the 5' fragment's own start completes it (and the 3'
-## fragment's own stop codon, at the other end). NOT_SUPPORTED by every candidate:
+## fragment's own stop codon, at the other end). UTRs come back from the end fragments
+## where the rebuilt start (stop) codon is theirs (utr5= / utr3= on the gene). NOT_SUPPORTED by every candidate:
 ## the placeholder is kept and step 8 fails the merge (NO_PROTEIN_SPAN).
 ## Placeholder models are kept in merges.placeholder.gff; per-merge results in
 ## miniprot.tsv. Requires miniprot and samtools, and a samtools faidx index of genome_fa.

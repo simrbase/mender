@@ -50,10 +50,10 @@ section. Copy `mender.cfg.example` to a project-specific name before editing.
 
 | Key | What it controls | Default | Notes |
 |-----|-----------------|---------|-------|
-| `skip_flags` | Exclude candidates whose `flag` column contains any of these | `SKIPPED_GENE,LOW_COV` | Comma-separated. See [flags_reference.md](flags_reference.md) for all filterable flags |
+| `skip_flags` | Exclude candidates whose `flag` column contains any of these | `SKIPPED_GENE,LOW_COV,PIECES_OVERLAP` | Comma-separated. See [flags_reference.md](flags_reference.md) for all filterable flags |
 | `flags` | Include only candidates matching this flag | `all` | `all` = no include filter. Example: `flags = STRONG` to merge only high-confidence candidates |
 | `min_tiling` | Minimum `max_tiling_hits` to process a candidate | `1` | 1 = no minimum. Higher values require more supporting reference proteins, but hit count reflects reference proteome depth (isoform count, copy number) as much as candidate quality — single-copy genes always score low regardless of how real the split is. Rely on flags instead |
-| `min_cov` | Minimum combined reference coverage % to process a candidate | `0` | 0 = no minimum. 60 is redundant when `LOW_COV` is already in `skip_flags` |
+| `min_cov` | Minimum `tiling_cov_pct` to process a candidate | `0` | 0 = no minimum. 60 is redundant when `LOW_COV` is already in `skip_flags` |
 | `require_isoseq` | Only process candidates with this exact `isoseq_flag` | _(blank = all)_ | Options: `FULL_SPAN`, `PARTIAL_SPAN`, `NO_SPANNERS` |
 | `isoseq_min_spanning` | Minimum number of spanning IsoSeq reads required | `0` | 0 = no minimum. Only meaningful when `isoseq_gff` is set |
 | `fix_partial` | Auto-trim unsupported terminal genes from `PARTIAL_SPAN` candidates before merging | `yes` | yes / no |
@@ -63,9 +63,11 @@ section. Copy `mender.cfg.example` to a project-specific name before editing.
 | `max_dist` | Maximum gene rank positions between two candidate fragments to be considered a tiling pair | `4` | Nested genes excluded from the rank. Values above 4 substantially increase `SKIPPED_GENE` candidates |
 | `wiggle` | Maximum allowed gap or overlap (aa) between two fragment alignments on the reference protein | `15` | Positive = gap; negative = overlap. Increase for distant reference proteomes |
 | `asym_threshold` | Tiling-hit count on the strong side of a junction needed to trigger asymmetric trimming | `6` | Only applies when `asym_trim = yes` |
-| `low_cov_thresh` | Combined reference coverage (%) below which `LOW_COV` is assigned | `60` | Controls the flag only; candidates are not removed unless `LOW_COV` is in `skip_flags` |
+| `low_cov_thresh` | `tiling_cov_pct` (coverage of the tiling reference by the best pair) below which `LOW_COV` is assigned | `60` | Controls the flag only; candidates are not removed unless `LOW_COV` is in `skip_flags` |
 | `frag_min_qcov` | Minimum % of the query protein a fragment hit must cover (qcovhsp) | `60` | Removes domain-sharing hits from the fragment pool: a split fragment aligns over most of itself |
 | `end_tol` | aa a piece may extend past its alignment on the junction side | `30` | Controls the `JUNCTION_OVERHANG` flag only |
+| `overlap_min_frac` | `PIECES_OVERLAP`: two pieces' alignments on one reference overlap by at least this fraction of the shorter alignment | `0.5` | Controls the flag only; candidates are not removed unless `PIECES_OVERLAP` is in `skip_flags` |
+| `overlap_min_qcov` | `PIECES_OVERLAP`: each piece must align over at least this % of itself on that reference | `60` | Keeps shared domains out: two genes aligning 20% of themselves to one domain are not copies |
 
 ---
 
@@ -88,10 +90,10 @@ The MSA junction scoring keys (`min_junction_score`, `no_msa`, `aligner`, `w_con
 
 | Key | What it controls | Default | Notes |
 |-----|-----------------|---------|-------|
-| `run_miniprot` | Rebuild each merged gene with miniprot in step 6 | `yes` | The merge's tiling reference proteins are aligned across the merged locus, best-ranked first. SUPPORTED: the placeholder model is replaced (real splice sites, missing exon recovered, start codon completed from the 5' fragment when needed). NOT_SUPPORTED: step 8 fails the merge (`NO_PROTEIN_SPAN`). Congeria negative control: 100/100 false merges NOT_SUPPORTED |
+| `run_miniprot` | Rebuild each merged gene with miniprot in step 6 | `yes` | The merge's tiling reference proteins are aligned across the merged locus, best-ranked first. SUPPORTED: the placeholder model is replaced (real splice sites, missing exon recovered, start/stop codons completed from the end fragments when needed, their UTRs put back where the rebuilt start/stop is theirs). NOT_SUPPORTED: step 8 fails the merge (`NO_PROTEIN_SPAN`). Congeria negative control: 100/100 false merges NOT_SUPPORTED |
 | `flank` | bp added on each side of the merged gene for the miniprot search | `5000` | — |
 | `min_prot_cov` | Minimum fraction of the reference protein the alignment must cover | `0.80` | Also required: no frameshift, no in-frame stop, CDS over every source gene |
-| `max_refs` | How many ranked reference candidates (`ref_candidates`, best first) to try | `10` (all written) | The first SUPPORTED one is used; `miniprot_ref_rank` / `miniprot_refs_tried` record which and how many |
+| `max_refs` | How many ranked reference candidates (`rebuild_candidates`, best first) to try | `10` (all written) | The first SUPPORTED one is used; `rebuild_ref` (miniprot.tsv, report.tsv), `miniprot_ref_rank` / `miniprot_refs_tried` record which and how many |
 
 ---
 

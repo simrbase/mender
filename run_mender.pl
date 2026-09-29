@@ -133,7 +133,7 @@ $trans_template =~ s/\[DATE\]/$date_tag/g;
 
 # merge filters
 my $fix_partial        = cfg("merge_filters", "fix_partial",        "yes");
-my $skip_flags         = cfg("merge_filters", "skip_flags",         "SKIPPED_GENE,LOW_COV");
+my $skip_flags         = cfg("merge_filters", "skip_flags",         "SKIPPED_GENE,LOW_COV,PIECES_OVERLAP");
 my $flags              = cfg("merge_filters", "flags",              "all");
 my $min_tiling         = cfg("merge_filters", "min_tiling",         "1");
 my $min_cov            = cfg("merge_filters", "min_cov",            "0");
@@ -149,6 +149,8 @@ my $asym_threshold     = cfg("merge_filters", "asym_threshold",     "6");
 my $low_cov_thresh     = cfg("merge_filters", "low_cov_thresh",     "60");
 my $frag_min_qcov      = cfg("merge_filters", "frag_min_qcov",      "60");
 my $end_tol            = cfg("merge_filters", "end_tol",            "30");
+my $overlap_min_frac   = cfg("merge_filters", "overlap_min_frac",   "0.5");
+my $overlap_min_qcov   = cfg("merge_filters", "overlap_min_qcov",   "60");
 
 # validation (gt + agat)
 my $run_gt    = cfg("validation", "run_gt",   "yes");
@@ -229,6 +231,7 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
         low_cov_thresh       => $low_cov_thresh,
         frag_min_qcov        => $frag_min_qcov,
         end_tol              => $end_tol,
+        overlap_min_qcov     => $overlap_min_qcov,
         isoseq_min_spanning  => $isoseq_min_span,
         flank                => $mp_flank,
         max_refs             => $mp_max_refs,
@@ -245,6 +248,7 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
         min_merged_cov     => $tv_min_mrgd_cov,
         min_ref_cov        => $tv_min_ref_cov,
         min_prot_cov       => $mp_min_prot_cov,
+        overlap_min_frac   => $overlap_min_frac,
     );
     for my $key (sort keys %zeroone) {
         my $val = $zeroone{$key};
@@ -261,7 +265,7 @@ my $perl_bin     = cfg("paths", "perl_bin",     "") || "perl";
     for my $known (qw(
         CLEAN STRONG SINGLE_HIT WEAK_END WEAK_INTERNAL LOW_COV
         SKIPPED_GENE OPPOSITE_STRAND_SKIP TRANSITIVE_JOIN MULTI_ISOFORM_JOIN LARGE_SPAN LARGE_SPAN_EXTREME
-        JUNCTION_OVERHANG
+        JUNCTION_OVERHANG PIECES_OVERLAP
     )) { $known_flags{$known} = 1 }
     for my $item (["skip_flags", $skip_flags], ["flags", $flags]) {
         my ($key, $val) = @$item;
@@ -662,6 +666,7 @@ if ($run_steps{4}) {
         ($asym_threshold   ? "--asym_threshold $asym_threshold "         : "") .
         ($low_cov_thresh   ? "--low_cov_thresh $low_cov_thresh "         : "") .
         "--frag_min_qcov $frag_min_qcov --end_tol $end_tol --max_evalue $evalue " .
+        "--overlap_min_frac $overlap_min_frac --overlap_min_qcov $overlap_min_qcov " .
         "$diamond_out " .
         "$gff " .
         "$subject_fa " .
@@ -1176,6 +1181,8 @@ if ($run_steps{10}) {
     $r->("  low_cov_thresh:             ${low_cov_thresh}%");
     $r->("  frag_min_qcov:              ${frag_min_qcov}%");
     $r->("  end_tol:                    ${end_tol} aa");
+    $r->("  overlap_min_frac:           ${overlap_min_frac}");
+    $r->("  overlap_min_qcov:           ${overlap_min_qcov}%");
     $r->("");
     $r->("[validation]");
     $r->("  run_translation_validation: " . ($run_transl_val =~ /^no$/i ? "no" : "yes"));

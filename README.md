@@ -292,7 +292,11 @@ Overlap too large (gap = −20aa):
                     ←  20aa overlap → FAILS, likely same domain
 ```
 
-**Combined coverage — how much of the reference protein the pair spans:**
+The test is made on every reference protein both genes hit. The one with the
+highest combined coverage is the pair's **tiling reference** (`tiling_ref`); the
+coverage, gap and e-values in the merge table are measured on it.
+
+**Combined coverage (`tiling_cov_pct`) — how much of the reference protein the pair spans:**
 
 Combined coverage is the total span from the leftmost alignment start to the
 rightmost alignment end, divided by the full reference protein length. It
@@ -317,6 +321,39 @@ likely to indicate that the two genes share a conserved domain (e.g. a
 protein family with a common motif) rather than being a genuine split gene.
 The threshold is configurable in the config file (`merge_filters` section) or
 via `--min_cov` when running `merge_split_genes.pl` manually.
+
+**Tandem copies — `PIECES_OVERLAP`:**
+
+Pieces of one split gene are consecutive parts of a protein: on every reference
+they sit side by side. Two copies of a duplicated gene sit on top of each other.
+The tiling test cannot see this on its own. It works one reference at a time, so
+an overlap on one reference only means that reference does not support the pair,
+and a piece covering > 85% of a reference is dropped by the fragment filter
+before the test. If some other reference is a fused two-unit protein, the two
+copies tile on it and become a merge.
+
+`PIECES_OVERLAP` checks every reference both pieces hit, including those dropped
+hits, and flags the merge when two pieces align to the same region: an overlap of
+at least `overlap_min_frac` (0.5) of the shorter alignment, each piece aligned over
+at least `overlap_min_qcov` (60%) of itself (so a shared domain is not enough).
+The reference is written in the `overlap_ref` column. The flag is in `skip_flags`
+by default.
+
+```
+Congeria merge_468 (pieces A = 617 aa, B = 609 aa)
+
+fused Dreissena protein, 1225 aa:
+  |======= A 1–614 =======| gap 15 |======= B 629–1224 =======|   tiles
+
+single-unit Dreissena protein, 612 aa:
+  |======= A 7–611 =======|   99% of the reference  (dropped by the fragment filter)
+  |======= B 4–611 =======|   99% of the reference  (dropped by the fragment filter)
+  same residues -> PIECES_OVERLAP: two copies, not one split gene
+```
+
+A real gene with internal repeats, cut so that each piece carries some of the
+repeats, can also be flagged. Skipped merges keep their flag in the merge table,
+so they can be reviewed.
 
 ### Confidence from multiple reference proteins
 
@@ -405,24 +442,25 @@ protein evidence. Multiple flags are comma-separated in the `flag` column.
 |------|---------|
 | `CLEAN` | Directly adjacent, ≥2 tiling hits, coverage ≥60% — solid candidate |
 | `STRONG` | All junctions ≥3 tiling hits — highest confidence protein evidence |
-| `SINGLE_HIT` | All junctions have exactly 1 tiling hit. **Review flag, not a default skip.** For single-copy genes in the reference proteome, 1 tiling hit is the expected maximum. Inspect `hit_desc` and `pident` before deciding whether to skip. |
+| `SINGLE_HIT` | All junctions have exactly 1 tiling hit. **Review flag, not a default skip.** For single-copy genes in the reference proteome, 1 tiling hit is the expected maximum. Inspect `tiling_ref_desc` and `pident` before deciding whether to skip. |
 | `WEAK_END` | Low-evidence terminal junction survived trimming |
 | `WEAK_INTERNAL` | Low-evidence internal junction survived splitting |
-| `LOW_COV` | Combined coverage <60% — likely domain sharing, not a split gene |
+| `LOW_COV` | `tiling_cov_pct` <60% — likely domain sharing, not a split gene |
 | `JUNCTION_OVERHANG` | A piece extends more than `end_tol` aa (default 30) past its alignment at the junction — sequence the reference lacks at the break |
 
 **Structural concern flags:**
 
 | Flag | Meaning |
 |------|---------|
+| `PIECES_OVERLAP` | Two pieces align to the same region of some reference protein, each over ≥60% of itself — copies of one gene unit (tandem duplicates), not consecutive parts of one gene. See "Tandem copies" above. Skipped by default. |
 | `SKIPPED_GENE` | Non-adjacent gene inside merge locus — review manually before merging |
 | `TRANSITIVE_JOIN` | One or more consecutive genes in the chain have no direct pairwise tiling evidence; the chain connection is inferred transitively. Compounds other flags: `STRONG,TRANSITIVE_JOIN` warrants the same caution as `WEAK_END`. |
-| `MULTI_ISOFORM_JOIN` | At least one source gene has multiple transcripts; the merged gene will contain cross-product isoform combinations not all of which may be biologically real. |
+| `MULTI_ISOFORM_JOIN` | At least one source gene has multiple transcripts: the placeholder carries the cross-product (N x M transcripts); a gene rebuilt by miniprot (step 6) has one transcript and records the source isoforms it did not use (`isoforms_not_used=`); without the rebuild, step 8 drops each cross-product transcript that fails on its own. See "Isoforms" under the miniprot rebuild. |
 | `LARGE_SPAN` | The merged locus exceeds the `large_span_warn` genomic span threshold (default 500 kb). Plausible for some gene families but review with IsoSeq for weak-evidence merges. |
 | `LARGE_SPAN_EXTREME` | The merged locus exceeds `large_span_extreme` (default 2 Mb). Very few vertebrate genes span this range. Recommended to add to `skip_flags` unless IsoSeq confirms. |
 
 The recommended starting point is to merge `STRONG` and `CLEAN` candidates
-while skipping `SKIPPED_GENE` and `LOW_COV`. These defaults are set in
+while skipping `SKIPPED_GENE`, `LOW_COV` and `PIECES_OVERLAP`. These defaults are set in
 `mender.cfg.example` and can be adjusted in the `[merge_filters]` section of
 the config, or via command line options to `merge_split_genes.pl`.
 
@@ -477,7 +515,7 @@ joining exon/CDS/UTR features in genomic order. CDS phases are recalculated.
 ```
 perl merge_split_genes.pl \
     --fix_partial \
-    --skip_flags SKIPPED_GENE,LOW_COV \
+    --skip_flags SKIPPED_GENE,LOW_COV,PIECES_OVERLAP \
     --gene_template  "PREFIX_g[GCOUNT:6]" \
     --trans_template "PREFIX_t[GCOUNT:6][TCOUNT:3]" \
     isoseq_validated.txt input.gff output.gff
@@ -518,22 +556,24 @@ bash split_gene_report_checks.sh
 4:coords_in_order       comma-sep coordinates (chr.start.end)
 5:ref                   chromosome
 6:gene_descs            comma-sep gene descriptions
-7:best_hit              reference protein best representing the chain: most chain genes hit,
-                        then identity-weighted coverage (a close reference beats a distant one)
-8:hit_desc              description of best_hit
-9:best_combined_cov_pct % of a reference protein covered by the best pair (its highest-coverage
-                        shared reference, which may differ from best_hit)
-10:best_gap             aa gap between the two best tiling alignments
-11:evalues              comma-sep e-values vs best_hit
+7:tiling_ref            reference protein the best pair tiles on with the highest combined
+                        coverage (detection evidence; columns 9-11 are measured on it)
+8:tiling_ref_desc       description of tiling_ref
+9:tiling_cov_pct        % of tiling_ref covered by the best pair (LOW_COV below 60)
+10:tiling_gap           aa gap between the two alignments on tiling_ref
+11:evalues              comma-sep e-values vs tiling_ref ('?' = no fragment hit to it)
 12:junction_tiling_hits pipe-sep hit counts per junction (chains only)
 13:junction_genomic_dist pipe-sep rank distances per junction (chains only)
 14:skipped_genes        genes sitting inside the merge locus (worth checking)
 15:max_tiling_hits      highest independent tiling hit count across any pair
 16:num_pairs_in_chain   number of pairwise relationships in the chain
 17:flag                 quality flag(s) — see Flag Definitions below
-18:best_hit_id_cov      identity-weighted coverage of best_hit: sum(pident x aligned span) / length
-19:ref_candidates       comma-sep ranked reference proteins (best_hit first, at most 10);
-                        the step 6 miniprot rebuild tries them in order
+18:rebuild_candidates   comma-sep reference proteins for the step 6 miniprot rebuild, tried in
+                        order (at most 10): most chain genes hit, then identity-weighted
+                        coverage (a close reference beats a distant one). The one used is
+                        rebuild_ref in miniprot.tsv / report.tsv; often not tiling_ref
+19:overlap_ref          reference on which two pieces align to the same region
+                        (PIECES_OVERLAP), or "."
 ```
 
 ### `isoseq_validated.txt` (22 columns)
@@ -544,7 +584,7 @@ Columns 1–19 are identical to `merge_candidates.txt`. Three columns are added:
 22:isoseq_flag            FULL_SPAN | PARTIAL_SPAN | NO_SPANNERS
 ```
 
-### `report.tsv` (17 columns, step 8 output)
+### `report.tsv` (18 columns, step 8 output)
 ```
 1:merge_id              merge group identifier (from merge table)
 2:new_gene_id           Mender gene ID in the merged GFF
@@ -559,10 +599,11 @@ Columns 1–19 are identical to `merge_candidates.txt`. Three columns are added:
 11:ref_len              length of best_ref_hit (aa)
 12:n_ref_hits           number of distinct reference hits found
 13:miniprot             SUPPORTED | NOT_SUPPORTED:<reason> | not_run (step 6 rebuild)
-14:translation_flag     OK | FRAMESHIFT_DETECTED
-15:source_flags         flag column from the merge table (step 4/5)
-16:fail_reasons         pipe-sep reasons for FAIL, or "."
-17:overall_result       PASS | FAIL | REVIEW
+14:rebuild_ref          reference the step 6 rebuild used (best-ranked candidate if NOT_SUPPORTED)
+15:translation_flag     OK | FRAMESHIFT_DETECTED
+16:source_flags         flag column from the merge table (step 4/5)
+17:fail_reasons         pipe-sep reasons for FAIL, or "."
+18:overall_result       PASS | FAIL | REVIEW
 ```
 
 ---
@@ -575,14 +616,15 @@ Columns 1–19 are identical to `merge_candidates.txt`. Three columns are added:
 |------|---------|
 | `CLEAN` | Directly adjacent, ≥2 tiling hits, coverage ≥60% — solid candidate |
 | `STRONG` | All junctions ≥3 tiling hits — highest confidence protein evidence |
-| `SINGLE_HIT` | All junctions have exactly 1 tiling hit. **Review, not a default skip**: for single-copy genes, 1 hit is the expected maximum. Check `hit_desc` and `pident`. |
+| `SINGLE_HIT` | All junctions have exactly 1 tiling hit. **Review, not a default skip**: for single-copy genes, 1 hit is the expected maximum. Check `tiling_ref_desc` and `pident`. |
 | `WEAK_END` | Terminal junction has 1–2 hits but survived trimming |
 | `WEAK_INTERNAL` | Internal junction has 1–2 hits but survived splitting |
-| `LOW_COV` | Combined coverage <60% — likely domain sharing, not a split gene |
+| `LOW_COV` | `tiling_cov_pct` <60% — likely domain sharing, not a split gene |
+| `PIECES_OVERLAP` | Two pieces align to the same region of some reference (reference in `overlap_ref`), each over ≥60% of itself — tandem copies, not one split gene. Skipped by default. |
 | `JUNCTION_OVERHANG` | A piece extends more than `end_tol` aa (default 30) past its alignment at the junction — sequence the reference lacks at the break |
 | `SKIPPED_GENE` | A non-adjacent gene sits inside the merge locus — check `skipped_genes` column and GFF before merging |
 | `TRANSITIVE_JOIN` | One or more consecutive gene pairs in the chain have no direct pairwise tiling evidence; connection is inferred transitively through other genes. `STRONG,TRANSITIVE_JOIN` warrants the same scrutiny as `WEAK_END`. `SINGLE_HIT,TRANSITIVE_JOIN` without IsoSeq is the highest-risk category. |
-| `MULTI_ISOFORM_JOIN` | At least one source gene has >1 transcript; merged gene will contain cross-product isoform combinations. Verify isoform structure before using isoform-level annotations. |
+| `MULTI_ISOFORM_JOIN` | At least one source gene has >1 transcript: the placeholder carries the cross-product (N x M transcripts); a gene rebuilt by miniprot (step 6) has one transcript and records the source isoforms it did not use (`isoforms_not_used=`); without the rebuild, step 8 drops each cross-product transcript that fails on its own. |
 | `LARGE_SPAN` | Merged locus genomic span exceeds `large_span_warn` (default 500 kb). Review with IsoSeq for weak-evidence merges. |
 | `LARGE_SPAN_EXTREME` | Merged locus span exceeds `large_span_extreme` (default 2 Mb). Recommend adding to `skip_flags` unless IsoSeq confirms. |
 
@@ -596,18 +638,18 @@ Columns 1–19 are identical to `merge_candidates.txt`. Three columns are added:
 
 ### Translation validation flags (`report.tsv`)
 
-**`miniprot` (column 13):** `SUPPORTED` (model rebuilt from the tiling reference protein),
+**`miniprot` (column 13):** `SUPPORTED` (model rebuilt from `rebuild_ref`, column 14),
 `NOT_SUPPORTED:<reason>` (`covers_N_of_M_sources`, `frameshift`, `inframe_stop`, `protein_cov_X`,
 `no_alignment`, `no_reference_protein`), or `not_run`.
 
-**`translation_flag` (column 14):**
+**`translation_flag` (column 15):**
 
 | Value | Meaning |
 |-------|---------|
 | `OK` | No internal stop codons in the merged CDS translation |
 | `FRAMESHIFT_DETECTED` | Internal stop codon(s) found — see `internal_stop_pos` for positions |
 
-**`fail_reasons` (column 16):**
+**`fail_reasons` (column 17):**
 
 | Value | Meaning |
 |-------|---------|
@@ -617,7 +659,7 @@ Columns 1–19 are identical to `merge_candidates.txt`. Three columns are added:
 | `LOW_MERGED_COV` | Merged protein covers less than `min_merged_cov` of its best reference hit |
 | `NO_HIT` | No reference hit found for the merged protein |
 
-**`overall_result` (column 17):**
+**`overall_result` (column 18):**
 
 | Value | Meaning |
 |-------|---------|
@@ -686,19 +728,49 @@ Prefer transcripts supported by more than one library or tissue.
 `merge_split_genes.pl` joins the fragments' own exons, so the joined "intron" has no real
 splice sites and an exon missing at the break stays missing. `rebuild_with_miniprot.pl`
 aligns a reference protein the fragments tiled against to the merged locus with
-miniprot (spliced protein-to-genome alignment): the merge's `ref_candidates`, best-ranked
-first (up to `max_refs`), until one is SUPPORTED. A distant reference aligned to the
+miniprot (spliced protein-to-genome alignment): the merge's `rebuild_candidates`, best-ranked
+first (up to `max_refs`), until one is SUPPORTED; that one is `rebuild_ref` in `miniprot.tsv`
+(with `rebuild_ref_desc`) and `report.tsv`. A distant reference aligned to the
 genome often needs a spurious frameshift where a closer one aligns cleanly. A true split gives one alignment covering
 most of the protein and every fragment, with real splice sites and no frameshift; that
 alignment replaces the placeholder model. A false merge of two different genes does not:
 in a *Congeria* negative control (100 adjacent pairs of distinct full-length genes merged
 on purpose) all 100 were NOT_SUPPORTED, while 65 of 93 real merges were SUPPORTED and
 rebuilt (median 97% of the reference protein; no internal stops) with a distant
-(Lottia/Capitella) reference. Rebuilt models are CDS-only (no UTRs). miniprot's model starts
+(Lottia/Capitella) reference. miniprot's model starts
 and ends where the reference alignment does; when that is not a start (stop) codon, the 5'
 (3') fragment's own start (stop) codon completes it if it is in frame there
-(`start_codon=` / `stop_codon=` `present | from_fragment:<gene> | incomplete | absent`); the
+(`start_codon=` / `stop_codon=` `present | from_fragment:<transcript> | incomplete | absent`); the
 model is never extended into sequence no annotation covered.
+
+UTRs: a protein has none, so miniprot gives the CDS only. The UTRs come back from the source
+genes, and only where the rebuilt model ends exactly where they did: when the rebuilt start
+codon is at the same genome position as the 5' fragment's CDS start, that fragment's 5' UTR
+(its exons upstream of the start, and the untranslated part of the first coding exon) is put
+back; the same at the 3' end with the 3' fragment's stop codon and 3' UTR. A UTR is never moved
+to a start or stop that differs, where it would overlap the new CDS or no longer touch it.
+Recorded as `utr5=` / `utr3=` `from_fragment:<transcript> | none`, with `five_prime_UTR` /
+`three_prime_UTR` features; `validated.mrna.fa` (step 10) then includes the UTRs.
+
+Which source transcript: for each end, the end fragment's transcripts are tried longest CDS
+first, and the first one that fits is used (for completion: the rebuilt start/stop falls in
+its CDS in its frame; for a UTR: its CDS starts/ends exactly where the rebuilt one does). A
+multi-isoform gene's longest CDS can be an alternative ORF unrelated to the rebuilt model
+(Chamaeleo BROX: one isoform codes across five exons, the other calls a short ORF in the last
+exon), so the longest is not taken blindly.
+
+**Isoforms.** A rebuilt gene has one transcript: the reference protein defines one coding
+model, and alternative splicing is evidence it cannot give. The placeholder's cross-product
+transcripts (step 5, N x M for multi-isoform sources) are replaced, and the gene records
+`placeholder_transcripts=`, `source_isoforms=<gene>:<n>` and `isoforms_not_used=` (the source
+transcripts nothing was taken from), so no isoform disappears silently. Without the rebuild
+(`run_miniprot = no`), step 8 judges the gene by its representative transcript (longest
+without an internal stop) and then checks each other transcript on its own: one with an
+internal stop, or with less than `min_merged_cov` of its protein covered by a reference, is
+not written to the PASS file (`dropped_transcripts_internal_stop=` /
+`dropped_transcripts_low_cov=` on the gene). In practice multi-isoform merges are rare: 1 of
+1,123 candidates in the Chamaeleo CCA3 run (675 of 24,837 genes have isoforms), none in
+Congeria (no isoforms annotated).
 
 ## Without IsoSeq
 
@@ -708,6 +780,6 @@ IsoSeq is optional. If `isoseq_gff` is left blank in the config, steps 3 and
 ```bash
 perl merge_split_genes.pl \
     --flags STRONG \
-    --skip_flags SKIPPED_GENE,LOW_COV \
+    --skip_flags SKIPPED_GENE,LOW_COV,PIECES_OVERLAP \
     merge_candidates.txt input.gff output.gff
 ```

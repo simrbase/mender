@@ -23,8 +23,12 @@ use FindBin;
 #   F5  20 genes inside a long gene are excluded from the rank (a 10-gene look-back missed them)
 #   F6  identical output under two Perl hash seeds (ties never depend on hash order)
 #   F7  a piece extending 40 aa past its alignment at the junction -> JUNCTION_OVERHANG
-#   F8  two references tile a pair equally; the closer one (95% vs 50% identity) is best_hit and
-#       ranked first in ref_candidates, although the distant one has the lower id
+#   F8  two references tile a pair equally: tiling_ref is the lower id (the tie rule), while
+#       rebuild_candidates ranks the closer one (95% vs 50% identity) first
+#   F9  two pieces tile on a fused reference but each covers ~98% of a single-unit reference,
+#       on the same residues (tandem copies) -> PIECES_OVERLAP, overlap_ref = that reference
+#   F10 two pieces overlap on a reference only through a shared domain (each aligns 41% of
+#       itself there) -> no PIECES_OVERLAP
 
 my $dir = tempdir(CLEANUP => 1);
 my ($passed, $failed) = (0, 0);
@@ -150,7 +154,7 @@ push @gff, gff_block('chrF', 'Bf', '+', $Bf_ex, [phases_for(0, lengths_of(@B_pie
 push @gff, gff_block('chrS', 'As', '+', $As_ex, [phases_for(0, lengths_of(@As_pieces))]);
 push @gff, gff_block('chrS', 'Bs', '+', $Bs_ex, [phases_for(0, lengths_of(@B_pieces))]);
 write_file("$dir/in.gff", join("\n", @gff) . "\n");
-write_file("$dir/merges.txt", join("\t", qw(merge_id genes_in_order flag max_tiling_hits best_combined_cov_pct)) . "\n"
+write_file("$dir/merges.txt", join("\t", qw(merge_id genes_in_order flag max_tiling_hits tiling_cov_pct)) . "\n"
   . "merge_1\tA,B\tCLEAN\t3\t95\nmerge_2\tMB,MA\tCLEAN\t3\t95\nmerge_3\tAn,Bn\tCLEAN\t3\t95\n"
   . "merge_4\tAf,Bf\tCLEAN\t3\t95\nmerge_5\tAs,Bs\tCLEAN\t3\t95\n");
 
@@ -212,7 +216,8 @@ check($p5 eq $expected_protein && $ph5 eq 'ok', 'M5: a stop codon split by an in
 # ================================================================ find_split_genes.pl
 # genes on chr1 (+): g1 g2 adjacent; chr6: g3 g4 adjacent (wrong order on the reference); chr2 (-): h1 h2;
 # chr3: d1 d2 domain-sharing (qcov 30); chr4: k1, a long gene L containing 20 genes, k2;
-# chr5: o1 o2 with a 40-aa overhang at the junction; chr7: i1 i2 tiling REF (50%) and REFC (95%)
+# chr5: o1 o2 with a 40-aa overhang at the junction; chr7: i1 i2 tiling REF (50%) and REFC (95%);
+# chr8: c1 c2 tandem copies (tile on FUSED, overlap on SINGLE); chr9: s1 s2 sharing a domain of DOM
 my @fgff = ('##gff-version 3');
 my $gene = sub { my ($chr, $id, $s, $e, $strand) = @_;
   push @fgff, join("\t", $chr, 't', 'gene', $s, $e, '.', $strand, '.', "ID=$id"),
@@ -226,18 +231,22 @@ for my $n (1 .. 20) { $gene->('chr4', "n$n", 1000 + $n * 40000, 1000 + $n * 4000
 $gene->('chr4', 'k2', 950000, 951000, '+');
 $gene->('chr5', 'o1', 1000, 2000, '+'); $gene->('chr5', 'o2', 3000, 4000, '+');
 $gene->('chr7', 'i1', 1000, 2000, '+'); $gene->('chr7', 'i2', 3000, 4000, '+');
+$gene->('chr8', 'c1', 1000, 2000, '+'); $gene->('chr8', 'c2', 3000, 4000, '+');
+$gene->('chr9', 's1', 1000, 2000, '+'); $gene->('chr9', 's2', 3000, 4000, '+');
 write_file("$dir/f.gff", join("\n", @fgff) . "\n");
 # subject: REF (500 aa) and REF2, a second reference with the same tiling (a tie in coverage)
 write_file("$dir/subject.fa", ">REF gene:ENSG1 gene_symbol:REF1 description:reference one\nM\n>REF2 gene:ENSG2 gene_symbol:REF2 description:reference two\nM\n"
-  . ">REFC gene:ENSG3 gene_symbol:REFC description:reference close\nM\n");
-my @ids = qw(g1 g2 g3 g4 h1 h2 d1 d2 k1 k2 L o1 o2 i1 i2);
+  . ">REFC gene:ENSG3 gene_symbol:REFC description:reference close\nM\n"
+  . ">FUSED description:two units\nM\n>SINGLE description:one unit\nM\n>DOM description:domain protein\nM\n");
+my @ids = qw(g1 g2 g3 g4 h1 h2 d1 d2 k1 k2 L o1 o2 i1 i2 c1 c2 s1 s2);
 my $query_fa = '';
 for my $id (@ids) { $query_fa .= ">$id.t desc $id\nM\n" }
 write_file("$dir/query.fa", $query_fa);
 # qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore scovhsp slen qcovhsp qlen
-my $row = sub { my ($q, $s, $ss, $se, $qs, $qe, $qlen, $pident) = @_;
-  my $scov = int(100 * ($se - $ss + 1) / 500); my $qcov = int(100 * ($qe - $qs + 1) / $qlen);
-  return join("\t", "$q.t", $s, $pident // 50,$se - $ss + 1, 0, 0, $qs, $qe, $ss, $se, '1e-50', 300, $scov, 500, $qcov, $qlen) . "\n" };
+my $row = sub { my ($q, $s, $ss, $se, $qs, $qe, $qlen, $pident, $slen) = @_;
+  $slen //= 500;
+  my $scov = int(100 * ($se - $ss + 1) / $slen); my $qcov = int(100 * ($qe - $qs + 1) / $qlen);
+  return join("\t", "$q.t", $s, $pident // 50,$se - $ss + 1, 0, 0, $qs, $qe, $ss, $se, '1e-50', 300, $scov, $slen, $qcov, $qlen) . "\n" };
 my $blast = join('',
   $row->('g1', 'REF', 1, 240, 1, 240, 245), $row->('g2', 'REF', 245, 495, 1, 251, 255),     # F1
   $row->('g1', 'REF2', 1, 240, 1, 240, 245), $row->('g2', 'REF2', 245, 495, 1, 251, 255),   # F1: a second, tied reference
@@ -248,6 +257,10 @@ my $blast = join('',
   $row->('o1', 'REF', 1, 240, 1, 240, 285), $row->('o2', 'REF', 245, 495, 1, 251, 255),   # F7 o1: 45 aa past its alignment
   $row->('i1', 'REF', 1, 240, 1, 240, 245), $row->('i2', 'REF', 245, 495, 1, 251, 255),   # F8 distant reference (50%)
   $row->('i1', 'REFC', 1, 240, 1, 240, 245, 95), $row->('i2', 'REFC', 245, 495, 1, 251, 255, 95),   # F8 close reference (95%)
+  $row->('c1', 'FUSED', 1, 240, 1, 240, 245), $row->('c2', 'FUSED', 245, 495, 1, 251, 255),   # F9 tile on the fused protein
+  $row->('c1', 'SINGLE', 1, 245, 1, 245, 245, 80, 250), $row->('c2', 'SINGLE', 3, 248, 5, 250, 255, 80, 250),   # F9 same residues (98%)
+  $row->('s1', 'REF', 1, 240, 1, 240, 245), $row->('s2', 'REF', 245, 495, 1, 251, 255),     # F10 tile on REF
+  $row->('s1', 'DOM', 100, 200, 1, 101, 245), $row->('s2', 'DOM', 100, 200, 1, 105, 255),   # F10 shared domain, 41% of each piece
 );
 write_file("$dir/blast.tsv", $blast);
 my $find = "$FindBin::Bin/../find_split_genes.pl";
@@ -285,13 +298,31 @@ chomp $mhdr;
 my @mhdr = split /\t/, $mhdr;
 for my $i (0 .. $#mhdr) { $mcol{ $mhdr[$i] } = $i }
 my $i_row = $cand{'i1,i2'} // [];
-check(($i_row->[ $mcol{best_hit} ] // '') eq 'REFC', 'F8: the closer reference (95% identity) is best_hit over the distant one (50%)',
-      $i_row->[ $mcol{best_hit} ]);
-my $i_cands = $i_row->[ $mcol{ref_candidates} ] // '';
-chomp $i_cands;
-check($i_cands eq 'REFC,REF', 'F8: ref_candidates ranks the closer reference first', $i_cands);
-check(abs(($i_row->[ $mcol{best_hit_id_cov} ] // 0) - 0.95 * 491 / 500) < 0.002,
-      'F8: best_hit_id_cov = identity x aligned span / reference length', $i_row->[ $mcol{best_hit_id_cov} ]);
+for my $gone (qw(best_hit hit_desc best_combined_cov_pct best_gap best_hit_id_cov ref_candidates)) {
+  check(!exists $mcol{$gone}, "merge table: the old column $gone is gone");
+}
+check(($i_row->[ $mcol{tiling_ref} ] // '') eq 'REF', 'F8: tiling_ref of a coverage tie is the lower id (REF)', $i_row->[ $mcol{tiling_ref} ]);
+check(($i_row->[ $mcol{tiling_ref_desc} ] // '') eq 'REF1 | reference one', 'F8: tiling_ref_desc describes tiling_ref',
+      $i_row->[ $mcol{tiling_ref_desc} ]);
+my $i_cands = $i_row->[ $mcol{rebuild_candidates} ] // '';
+check($i_cands eq 'REFC,REF', 'F8: rebuild_candidates ranks the closer reference (95% identity) first', $i_cands);
+
+# F9 / F10: PIECES_OVERLAP
+my $c_row = $cand{'c1,c2'} // [];
+my $c_overlap = $c_row->[ $mcol{overlap_ref} ] // '';
+chomp $c_overlap;
+check(scalar(($c_row->[ $mcol{flag} ] // '') =~ /PIECES_OVERLAP/), 'F9: tandem copies (same residues of SINGLE) -> PIECES_OVERLAP',
+      $c_row->[ $mcol{flag} ]);
+check($c_overlap eq 'SINGLE', 'F9: overlap_ref names the reference they overlap on, a hit the fragment filter drops', $c_overlap);
+check(($c_row->[ $mcol{tiling_ref} ] // '') eq 'FUSED', 'F9: the pair still tiles on the fused reference', $c_row->[ $mcol{tiling_ref} ]);
+my $s_row = $cand{'s1,s2'} // [];
+my $s_overlap = $s_row->[ $mcol{overlap_ref} ] // '';
+chomp $s_overlap;
+check(@$s_row && ($s_row->[ $mcol{flag} ] // '') !~ /PIECES_OVERLAP/ && $s_overlap eq '.',
+      'F10: a shared domain (41% of each piece) is not PIECES_OVERLAP', ($s_row->[ $mcol{flag} ] // 'no row') . " / $s_overlap");
+my $g_overlap = $cand{'g1,g2'}[ $mcol{overlap_ref} ] // '';
+chomp $g_overlap;
+check($g_overlap eq '.', 'F1: a plain split has overlap_ref "."', $g_overlap);
 
 print $failed ? "\n$failed FAILED, $passed passed\n" : "all $passed checks passed\n";
 exit($failed ? 1 : 0);

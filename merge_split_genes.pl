@@ -60,7 +60,7 @@ use warnings;
 ##                      e.g. --flags STRONG,CLEAN
 ##                      Use 'all' to process every row regardless of flag
 ##   --min_tiling N     only process merges with max_tiling_hits >= N (default: 1)
-##   --min_cov N        only process merges with combined_cov_pct >= N (default: 0)
+##   --min_cov N        only process merges with tiling_cov_pct >= N (default: 0)
 ##   --skip_isoseq F    skip merges with isoseq_flag matching F
 ##                      e.g. --skip_isoseq PARTIAL_SPAN
 ##   --removed FILE     filename for removed genes GFF (default: removed_genes.gff)
@@ -123,18 +123,24 @@ use warnings;
 ##   SINGLE_HIT           all junctions have exactly 1 tiling hit.
 ##                        This is a REVIEW flag, not a default skip. For single-copy
 ##                        genes in the reference proteome, 1 hit is the expected maximum.
-##                        Inspect hit_desc and pident before deciding. See FLAG DEFINITIONS
+##                        Inspect tiling_ref_desc and pident before deciding. See FLAG DEFINITIONS
 ##                        in find_split_genes.pl for full guidance.
 ##   WEAK_END             terminal junction has 1-2 hits but survived trimming
 ##   WEAK_INTERNAL        internal junction has 1-2 hits but survived splitting
-##   LOW_COV              combined coverage < 60% — likely domain sharing, not split gene
+##   LOW_COV              tiling_cov_pct < 60% — likely domain sharing, not split gene
+##   PIECES_OVERLAP       two pieces align to the same region of some reference protein
+##                        (each over >= 60% of itself): copies of one gene unit (tandem
+##                        duplicates), not consecutive parts of one gene. See overlap_ref.
+##   JUNCTION_OVERHANG    a piece extends > end_tol aa past its alignment at a junction
 ##   SKIPPED_GENE         a non-adjacent gene sits inside the merge locus — review manually
 ##   TRANSITIVE_JOIN      one or more consecutive genes in the chain have no direct
 ##                        pairwise tiling evidence; connection is inferred transitively.
 ##                        Compounds other flags: STRONG,TRANSITIVE_JOIN should be treated
 ##                        with the same caution as WEAK_END. Always check IsoSeq.
 ##   MULTI_ISOFORM_JOIN   at least one source gene has multiple transcripts; merged gene
-##                        will contain cross-product isoform combinations.
+##                        will contain cross-product isoform combinations (the miniprot
+##                        rebuild, step 6, then keeps one transcript; step 8 drops
+##                        cross-product transcripts that fail on their own).
 ##   LARGE_SPAN           merged locus exceeds large_span_warn genomic span (default 500kb)
 ##   LARGE_SPAN_EXTREME   merged locus exceeds large_span_extreme (default 2Mb) —
 ##                        strongly recommended to add to skip_flags unless IsoSeq confirms
@@ -186,7 +192,7 @@ use warnings;
 ##
 ## Dry run — see what would be merged without writing any files:
 ##
-##   perl merge_split_genes.pl --fix_partial --skip_flags SKIPPED_GENE,LOW_COV \
+##   perl merge_split_genes.pl --fix_partial --skip_flags SKIPPED_GENE,LOW_COV,PIECES_OVERLAP \
 ##       --dry_run \
 ##       isoseq_validated.txt \
 ##       input.gff \
@@ -197,7 +203,7 @@ use warnings;
 ##
 ##   perl merge_split_genes.pl \
 ##       --fix_partial \
-##       --skip_flags SKIPPED_GENE,LOW_COV \
+##       --skip_flags SKIPPED_GENE,LOW_COV,PIECES_OVERLAP \
 ##       --gene_template  "CCA3g1[GCOUNT:6]000" \
 ##       --trans_template "CCA3t1[GCOUNT:6][TCOUNT:3]" \
 ##       isoseq_validated.txt \
@@ -213,7 +219,7 @@ use warnings;
 ##
 ##   perl merge_split_genes.pl \
 ##       --fix_partial \
-##       --skip_flags SKIPPED_GENE,LOW_COV \
+##       --skip_flags SKIPPED_GENE,LOW_COV,PIECES_OVERLAP \
 ##       --spanning_rescue \
 ##       --gene_template  "CCA3g1[GCOUNT:6]000" \
 ##       --trans_template "CCA3t1[GCOUNT:6][TCOUNT:3]" \
@@ -226,7 +232,7 @@ use warnings;
 ##
 ##   perl merge_split_genes.pl \
 ##       --flags STRONG \
-##       --skip_flags SKIPPED_GENE,LOW_COV,SINGLE_HIT,WEAK_END \
+##       --skip_flags SKIPPED_GENE,LOW_COV,PIECES_OVERLAP,SINGLE_HIT,WEAK_END \
 ##       --require_isoseq FULL_SPAN \
 ##       --isoseq_min_spanning 3 \
 ##       --gene_template  "CCA3g1[GCOUNT:6]000" \
@@ -239,7 +245,7 @@ use warnings;
 ##
 ##   perl merge_split_genes.pl \
 ##       --flags STRONG \
-##       --skip_flags SKIPPED_GENE,LOW_COV \
+##       --skip_flags SKIPPED_GENE,LOW_COV,PIECES_OVERLAP \
 ##       --gene_template  "ACI1_HiC_scaffold_1_[GCOUNT:6]" \
 ##       --trans_template "ACI1_HiC_scaffold_1_[GCOUNT:6].[TCOUNT]" \
 ##       merge_candidates.txt \
@@ -250,7 +256,7 @@ use warnings;
 ##
 ##   perl merge_split_genes.pl \
 ##       --fix_partial \
-##       --skip_flags SKIPPED_GENE,LOW_COV \
+##       --skip_flags SKIPPED_GENE,LOW_COV,PIECES_OVERLAP \
 ##       isoseq_validated.txt \
 ##       input.gff \
 ##       output.gff
@@ -486,7 +492,8 @@ for my $i (0 .. $#hdr_cols) {
     $col_genes          = $i if $hdr_cols[$i] eq "genes_in_order";
     $col_flag           = $i if $hdr_cols[$i] eq "flag";
     $col_tiling         = $i if $hdr_cols[$i] eq "max_tiling_hits";
-    $col_cov            = $i if $hdr_cols[$i] eq "best_combined_cov_pct";
+    $col_cov            = $i if $hdr_cols[$i] eq "tiling_cov_pct"
+                             || $hdr_cols[$i] eq "best_combined_cov_pct";   # name before 2026-09-29
     $col_isoseq_flag    = $i if $hdr_cols[$i] eq "isoseq_flag";
     $col_isoseq_count   = $i if $hdr_cols[$i] eq "spanning_isoseq_count";
     $col_isoseq_detail  = $i if $hdr_cols[$i] eq "spanning_isoseq_detail";
